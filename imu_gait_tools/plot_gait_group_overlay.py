@@ -8,31 +8,35 @@ plot_gait_trials.py (written by gait_analysis.py --save-trial-csv):
     <stem>_emg.csv      - 980 Hz EMG envelope (µV) + header comments
 
 Figure layout: 3 rows x 4 columns, Max only (Karl is not considered).
-Rows are the signals; each connection gets an overlay plot with the box
-plot of its peak-to-peak values directly to its right:
+Rows are the signals; each connection gets an overlay plot with a box
+plot of its per-cycle values directly to its right (metric chosen with
+--box-metric: rms = default, p2p = peak-to-peak):
 
     row 1: EMG envelope (µV)
     row 2: dynamic accel PC1 (g)
     row 3: angular-rate PC1 (deg/s)
 
-    col 1: USB overlays      col 2: USB peak-to-peak boxes
-    col 3: BLE overlays      col 4: BLE peak-to-peak boxes
+    col 1: USB overlays      col 2: USB metric boxes
+    col 3: BLE overlays      col 4: BLE metric boxes
 
 Every overlay cell draws Slow / Fast / Incline mean + 90 % CI
 (Slow tab:blue, Fast tab:green, Incline tab:red). Every box-plot cell
-shows one coloured box per walk type with the PER-CYCLE peak-to-peak
-values (each cycle's max - min) of that row's signal.
+shows one coloured box per walk type with that row's PER-CYCLE values
+in the metric selected with --box-metric: rms = sqrt(mean(y^2)) over
+the cycle's samples (default), p2p = cycle max - min.
 
 The cycle graphs use open panels (no top/right spines) and share ONE
 x axis (% of gait cycle, labelled once under the whole figure); the box
 plots keep their categorical walk-type x axis.
 
 Also writes gait_overlay_plot_data.csv (plotted mean/CI curves) and
-gait_overlay_p2p_data.csv (the per-cycle peak-to-peak values).
+gait_overlay_box_data.csv (BOTH per-cycle box metrics: one row per
+cycle with a metric column, "rms" and "p2p").
 
 Usage:
-    python plot_gait_group_overlay.py                 # default: PC, gain 1
-    python plot_gait_group_overlay.py --out-dir DIR   # custom output folder
+    python plot_gait_group_overlay.py                   # RMS boxes (default)
+    python plot_gait_group_overlay.py --box-metric p2p  # peak-to-peak boxes
+    python plot_gait_group_overlay.py --out-dir DIR     # custom output folder
     python plot_gait_group_overlay.py --walk-type Incline
 """
 import argparse
@@ -67,6 +71,11 @@ WALK_TYPES = ("Slow", "Fast", "Incline")
 WALK_COLORS = {"Slow": "tab:blue", "Fast": "tab:green", "Incline": "tab:red"}
 
 CYCLE_XLABEL = "% of gait cycle (0 = heel strike)"
+
+# Box-plot metric (--box-metric): rms = per-cycle RMS of the signal as
+# recorded (default), p2p = per-cycle peak-to-peak (max - min).
+BOX_METRICS = ("rms", "p2p")
+METRIC_LABEL = {"rms": "RMS", "p2p": "peak-to-peak"}
 
 
 def find_max_trials(base, walk_type, source="PC", gain=1):
@@ -151,12 +160,13 @@ def draw_overlay(ax, curves_by_walk, label, unit, title):
     ax.grid(True, alpha=0.3)
 
 
-def draw_boxplot(ax, p2p_by_walk, label, unit, title):
-    """Peak-to-peak box plots: one coloured box per walk type; each data
-    point is one gait cycle's (max - min) of that row's signal."""
+def draw_boxplot(ax, vals_by_walk, metric, unit, title):
+    """Box plots for the metric selected with --box-metric: one coloured
+    box per walk type; each data point is one gait cycle's value of that
+    row's signal (rms = sqrt(mean(y^2)), p2p = max - min)."""
     series, positions, colors, names = [], [], [], []
     for i, walk in enumerate(WALK_TYPES, start=1):
-        vals = p2p_by_walk.get(walk)
+        vals = vals_by_walk.get(walk)
         if vals is None or len(vals) == 0:
             continue
         series.append(np.asarray(vals, dtype=float))
@@ -180,18 +190,19 @@ def draw_boxplot(ax, p2p_by_walk, label, unit, title):
         ax.set_xticks(positions)
         ax.set_xticklabels(names)
         ax.set_xlim(0.5, len(WALK_TYPES) + 0.5)
-    ax.set_ylabel(f"peak-to-peak ({unit})")
+    ax.set_ylabel(f"{METRIC_LABEL[metric]} ({unit})")
     if title:
         ax.set_title(title, fontsize=10)
     ax.grid(True, axis="y", alpha=0.3)
 
 
-def make_overlay_figure(curves, p2p, suptitle, out_path):
+def make_overlay_figure(curves, box, metric, suptitle, out_path):
     """One figure, 3 rows (signals) x 4 columns
     [USB overlay | USB box | BLE overlay | BLE box]. The cycle overlays
     share ONE x axis (% of cycle, labelled once under the whole figure)
-    and stay open; the box plots keep their categorical walk-type x axis
-    with labels only on the bottom row."""
+    and stay open; the box plots show the per-cycle values of `metric`
+    (rms or p2p) on their categorical walk-type x axis with labels only
+    on the bottom row."""
     fig = plt.figure(figsize=(17, 11), constrained_layout=True)
     fig.suptitle(suptitle)
     outer = fig.add_gridspec(3, 4, width_ratios=[1.4, 0.6, 1.4, 0.6])
@@ -202,13 +213,13 @@ def make_overlay_figure(curves, p2p, suptitle, out_path):
     for row, (col, label, unit) in enumerate(SIGNALS):
         for k, conn in enumerate(CONNECTIONS):
             plot_col = 2 * k
-            # {walk: (grid, curves)} / {walk: p2p array} for this cell
+            # {walk: (grid, curves)} / {walk: {metric: values}} cells
             by_walk = {w: cbc[col]
                        for w, cbc in curves.get(conn, {}).items()
                        if col in cbc}
-            p2p_by_walk = {w: arr[col]
-                           for w, arr in p2p.get(conn, {}).items()
-                           if col in arr}
+            vals_by_walk = {w: arr[col][metric]
+                            for w, arr in box.get(conn, {}).items()
+                            if col in arr}
             # --- overlay cell (left of the pair) ---
             ax = fig.add_subplot(outer[row, plot_col])
             if anchor is None:
@@ -220,8 +231,9 @@ def make_overlay_figure(curves, p2p, suptitle, out_path):
             # --- box-plot cell (directly right of its overlay) ---
             bx = fig.add_subplot(outer[row, plot_col + 1])
             box_axes.append(bx)
-            draw_boxplot(bx, p2p_by_walk, label, unit,
-                         f"{conn}: peak-to-peak" if row == 0 else None)
+            draw_boxplot(bx, vals_by_walk, metric, unit,
+                         f"{conn}: {METRIC_LABEL[metric]}"
+                         if row == 0 else None)
             if row == len(SIGNALS) - 1:
                 bottom_axes.extend((ax, bx))
 
@@ -251,6 +263,9 @@ def main(argv=None):
                     help="Recording gain (default: 1)")
     ap.add_argument("--walk-type", choices=WALK_TYPES, default=None,
                     help="Only plot this walk type (default: all three)")
+    ap.add_argument("--box-metric", choices=BOX_METRICS, default="rms",
+                    help="Metric for the box-plot columns 2/4 (default: "
+                         "rms = per-cycle RMS; p2p = peak-to-peak)")
     ap.add_argument("--no-plot", action="store_true",
                     help="Do not open an interactive plot window")
     args = ap.parse_args(argv)
@@ -260,13 +275,13 @@ def main(argv=None):
 
     walk_types = (args.walk_type,) if args.walk_type else WALK_TYPES
     plot_rows = []
-    p2p_rows = []
+    box_rows = []
     # curves[conn][walk_type][column] = (grid, curves_arr)
     curves = {c: {} for c in CONNECTIONS}
     # trial_ids[conn][walk_type] = trial id the curves came from
     trial_ids = {c: {} for c in CONNECTIONS}
-    # p2p[conn][walk_type][column] = per-cycle peak-to-peak array
-    p2p = {c: {} for c in CONNECTIONS}
+    # box[conn][walk_type][column] = {"rms": arr, "p2p": arr} per cycle
+    box = {c: {} for c in CONNECTIONS}
     columns = [c for c, _, _ in SIGNALS]
 
     for walk_type in walk_types:
@@ -299,10 +314,10 @@ def main(argv=None):
         if missing:
             print(f"WARNING: {conn}: missing {', '.join(missing)} data")
 
-    # Equalize the cycle counts: every trace (overlay mean/CI and
-    # peak-to-peak box) uses the SAME number of gait cycles - the
-    # lowest count found across all walk types and connections - so
-    # every legend reports the same n.
+    # Equalize the cycle counts: every trace (overlay mean/CI and box
+    # plots) uses the SAME number of gait cycles - the lowest count
+    # found across all walk types and connections - so every legend
+    # reports the same n.
     counts = {}
     for conn in CONNECTIONS:
         for walk, cbc in curves[conn].items():
@@ -327,10 +342,12 @@ def main(argv=None):
                     continue
                 curves_arr = curves_arr[:n_common]
                 cbc[col] = (grid, curves_arr)
-                p2p.setdefault(conn, {}).setdefault(walk, {})[col] = (
-                    curves_arr.max(axis=1) - curves_arr.min(axis=1))
+                box.setdefault(conn, {}).setdefault(walk, {})[col] = {
+                    "p2p": curves_arr.max(axis=1) - curves_arr.min(axis=1),
+                    "rms": np.sqrt((curves_arr ** 2).mean(axis=1)),
+                }
 
-    # Mean/CI and per-cycle peak-to-peak CSVs from the equalized data.
+    # Mean/CI and per-cycle box-metric CSVs from the equalized data.
     for conn in CONNECTIONS:
         for walk, cbc in curves[conn].items():
             for col in columns:
@@ -352,21 +369,25 @@ def main(argv=None):
                         "ci_high": hi,
                         "n_cycles": n,
                     })
-                for k, v in enumerate(p2p[conn][walk][col], start=1):
-                    p2p_rows.append({
-                        "connection": conn,
-                        "walk_type": walk,
-                        "trial_id": trial_id,
-                        "signal": col,
-                        "cycle": int(k),
-                        "p2p": float(v),
-                    })
+                for metric_name in BOX_METRICS:
+                    for k, v in enumerate(
+                            box[conn][walk][col][metric_name], start=1):
+                        box_rows.append({
+                            "connection": conn,
+                            "walk_type": walk,
+                            "trial_id": trial_id,
+                            "signal": col,
+                            "cycle": int(k),
+                            "metric": metric_name,
+                            "value": float(v),
+                        })
 
     fig_path = os.path.join(args.out_dir, "gait_group_overlay.png")
     suptitle = (f"Gait-cycle overlays ({SUBJECT}): gain-{args.gain} "
                 f"{args.source} recordings - slow / fast / incline walk, "
-                "mean + 90% CI")
-    make_overlay_figure(curves, p2p, suptitle, fig_path)
+                "mean + 90% CI, boxes = "
+                f"{METRIC_LABEL[args.box_metric]}")
+    make_overlay_figure(curves, box, args.box_metric, suptitle, fig_path)
     print(f"\nwritten: {fig_path}")
 
     csv_path = os.path.join(args.out_dir, "gait_overlay_plot_data.csv")
@@ -374,10 +395,10 @@ def main(argv=None):
     plot_data.to_csv(csv_path, index=False)
     print(f"written: {csv_path}  ({len(plot_data)} rows)")
 
-    p2p_path = os.path.join(args.out_dir, "gait_overlay_p2p_data.csv")
-    p2p_data = pd.DataFrame(p2p_rows)
-    p2p_data.to_csv(p2p_path, index=False)
-    print(f"written: {p2p_path}  ({len(p2p_data)} rows)")
+    box_path = os.path.join(args.out_dir, "gait_overlay_box_data.csv")
+    box_data = pd.DataFrame(box_rows)
+    box_data.to_csv(box_path, index=False)
+    print(f"written: {box_path}  ({len(box_data)} rows)")
 
     if not args.no_plot:
         plt.show()

@@ -339,7 +339,8 @@ Euler-angle signals).
 ## Stage 3c: Walk-type overlay figure — `plot_gait_group_overlay.py`
 
 ```
-.venv/bin/python plot_gait_group_overlay.py
+.venv/bin/python plot_gait_group_overlay.py                 # RMS boxes (default)
+.venv/bin/python plot_gait_group_overlay.py --box-metric p2p # peak-to-peak boxes
 ```
 
 One figure — `gait_group_overlay.png` — comparing the three walk types
@@ -348,15 +349,18 @@ recordings. Layout is a **3 × 4 matrix**:
 
 | | col 1 | col 2 | col 3 | col 4 |
 |---|---|---|---|---|
-| row 1 | USB overlays — EMG envelope (µV) | USB peak-to-peak boxes | BLE overlays — EMG envelope | BLE peak-to-peak boxes |
+| row 1 | USB overlays — EMG envelope (µV) | USB boxes (metric) | BLE overlays — EMG envelope | BLE boxes (metric) |
 | row 2 | USB — dyn accel PC1 (g) | USB boxes | BLE — dyn accel PC1 | BLE boxes |
 | row 3 | USB — ang rate PC1 (deg/s) | USB boxes | BLE — ang rate PC1 | BLE boxes |
 
 - **Overlay cells**: Slow / Fast / Incline each drawn as mean + 90 % CI —
   Slow `tab:blue`, Fast `tab:green`, Incline `tab:red`.
 - **Box-plot cells** (directly right of their overlay): one coloured box
-  per walk type showing the **per-cycle peak-to-peak** distribution
-  (each cycle's max − min ≈ 10 values per box).
+  per walk type showing the **per-cycle metric** distribution (~10
+  values per box), selected with `--box-metric`:
+  - `rms` (**default**) — `sqrt(mean(y^2))` over each cycle's samples,
+    as recorded (DC offset included); ylabel `RMS (unit)`.
+  - `p2p` — each cycle's max − min; ylabel `peak-to-peak (unit)`.
 - **Style**: cycle graphs are open panels (no top/right spines) and share
   **one x axis** — `% of gait cycle (0 = heel strike)` — labelled once
   under the whole figure; tick labels only on the bottom row. Box plots
@@ -364,8 +368,9 @@ recordings. Layout is a **3 × 4 matrix**:
 
 Also writes `gait_overlay_plot_data.csv` (`connection, walk_type,
 trial_id, signal, cycle_pct, mean, ci_low, ci_high, n_cycles`) and
-`gait_overlay_p2p_data.csv` (`connection, walk_type, trial_id, signal,
-cycle, p2p`).
+`gait_overlay_box_data.csv` (`connection, walk_type, trial_id, signal,
+cycle, metric, value` — BOTH box metrics, `metric` ∈ {`rms`, `p2p`},
+regardless of the `--box-metric` used for the figure).
 
 ---
 
