@@ -361,10 +361,15 @@ recordings. Layout is a **3 × 4 matrix**:
   - `rms` (**default**) — `sqrt(mean(y^2))` over each cycle's samples,
     as recorded (DC offset included); ylabel `RMS (unit)`.
   - `p2p` — each cycle's max − min; ylabel `peak-to-peak (unit)`.
-- **Style**: cycle graphs are open panels (no top/right spines) and share
-  **one x axis** — `% of gait cycle (0 = heel strike)` — labelled once
-  under the whole figure; tick labels only on the bottom row. Box plots
-  keep their categorical (walk-type) x axis.
+- **Style** (sit-stand style): cycle panels are fully open — **all
+  spines removed** (bottom spine only on the bottom row), no y tick
+  notches (labels kept), one uniform y-text size, dashed gray grid —
+  and share **one x axis** whose tick marks and labels appear **only on
+  the bottom row**. The x axis title `% of gait cycle (0 = heel strike)`
+  is set **twice** — directly under each bottom-row ang-rate overlay,
+  never centred under the figure. The figure's **only legend** sits in
+  the top-left subplot. Box plots keep their framed, categorical
+  (walk-type) x axis.
 
 Also writes `gait_overlay_plot_data.csv` (`connection, walk_type,
 trial_id, signal, cycle_pct, mean, ci_low, ci_high, n_cycles`) and

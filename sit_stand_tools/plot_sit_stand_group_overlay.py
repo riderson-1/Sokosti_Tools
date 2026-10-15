@@ -232,7 +232,7 @@ def draw_raw_cell(axes, raw_by_conn, title):
     axes[0].set_title(title, fontsize=10)
 
 
-def draw_signal_cell(axes, curves_by_conn, title):
+def draw_signal_cell(axes, curves_by_conn):
     """3 stacked subplots (EMG envelope, accel PC1, rate PC1); the USB and
     BLE means + 90 % CI are overlaid in each, colour = connection. Open
     panels (no top/right spines); the x axis is shared figure-wide, so
@@ -267,8 +267,6 @@ def draw_signal_cell(axes, curves_by_conn, title):
             ax.tick_params(left=False, bottom=False)
         _open(ax, keep_bottom=(ax is axes[-1]))
         ax.grid(True, which="both", linestyle="--", color="gray", alpha=0.5)
-    axes[0].set_title(title, fontsize=10)
-
 
 def make_overlay_figure(subject_curves, subject_raw, gain, suptitle,
                         out_path):
@@ -283,8 +281,10 @@ def make_overlay_figure(subject_curves, subject_raw, gain, suptitle,
     fig.suptitle(suptitle)
     # one row per raw channel, a spacer row, then the 3 signal panels.
     # hspace=0 makes the panels touch so vertical grid lines run
-    # continuously (reference example style).
-    heights = [1] * N_RAW_CHANNELS + [0.4] + [1.67] * 3
+    # continuously (reference example style).  The spacer row is
+    # deliberately tall to give a clear visual gap between the raw
+    # EMG block and the signal block.
+    heights = [1] * N_RAW_CHANNELS + [0.1] + [1.67] * 3
     outer = fig.add_gridspec(N_RAW_CHANNELS + 4, 2, height_ratios=heights,
                              hspace=0)
     anchor = None
@@ -306,8 +306,7 @@ def make_overlay_figure(subject_curves, subject_raw, gain, suptitle,
 
         sig_axes = [fig.add_subplot(outer[17 + k, col], sharex=anchor)
                     for k in range(3)]
-        draw_signal_cell(sig_axes, curves_by_conn,
-                         f"{subject}: BLE vs USB overlays (gain {gain})")
+        draw_signal_cell(sig_axes, curves_by_conn)
 
         all_axes += raw_axes + sig_axes
         bottom_axes.append(sig_axes[-1])

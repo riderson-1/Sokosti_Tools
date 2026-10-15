@@ -14,6 +14,9 @@ Raw CSV recordings          emg_isometric.py            parse_emg_logs.py       
 (BLE/USB capture)     -->   per-trial analysis    -->   log parser          -->   SNR plots
                             + *_analysis.log            + emg_isometric_summary.ods
                             + PNG figures               (4 tidy sheets)
+
+                         plot_isometric_raw_modes.py  (Stage 4, reads raw CSVs + ODS)
+                              --> raw SNR / MDF / FFT figures
 ```
 
 | Stage | File | Location |
@@ -22,6 +25,7 @@ Raw CSV recordings          emg_isometric.py            parse_emg_logs.py       
 | 2. Batch runner | `rerun_iso_dor.sh` | `/home/karl/repos/Sokosti_tools/` |
 | 3. Log parser | `parse_emg_logs.py` | `/home/karl/Documents/Master_Thesis/Testing/application_testing/` |
 | 4. Plotting | `plot_isometric_trials.py` | `/home/karl/repos/Sokosti_tools/` |
+| 5. Raw-mode plots | `plot_isometric_raw_modes.py` | `/home/karl/repos/Sokosti_tools/emg_isometric_tools/` |
 
 Data locations:
 
@@ -218,7 +222,98 @@ Produces `snr_strong.(png|pdf)`, `snr_weak.(png|pdf)` and
 
 ---
 
-## Reproducing the whole pipeline
+## Stage 4: SENIAM-bandpass mode comparison plots — `plot_isometric_raw_modes.py`
+
+```
+.venv/bin/python emg_isometric_tools/plot_isometric_raw_modes.py \
+    emg_isometric_tools/emg_isometric_summary.ods --out-dir emg_isometric_tools
+```
+
+### Filtering: SENIAM 20–450 Hz bandpass, no notch
+
+**All numbers from this stage are computed after:**
+
+1. per-channel DC (mean) removal, then
+2. a **20–450 Hz 4th-order Butterworth bandpass**, applied with `filtfilt`
+   (zero-phase) per contiguous gap-free segment.
+
+**No 50 Hz notch is applied** — mains interference stays in the signal by
+design. The only other filter is the 6 Hz low-pass of the linear envelope
+(rectify + LPF) that produces the signal/noise amplitudes.
+
+The SENIAM standard bandpass is 20–500 Hz, but the recordings are
+**fs = 980 Hz (Nyquist = 490 Hz)** and a Butterworth band edge that close to
+Nyquist is numerically **unstable** (verified: filter poles with |z| > 1 at a
+490 Hz upper edge, which corrupts the output — MDF slammed to 490 Hz). The
+upper edge is therefore **450 Hz**: a stable design (pole check enforced in
+code) that still covers the full EMG bandwidth. This differs from Stages 1–3
+(20–400 Hz + 48–52 Hz notch), so the two sets of numbers are not directly
+comparable to each other.
+
+The script reads **both** inputs:
+
+- `emg_isometric_summary.ods` — contraction windows (manual BLE / auto USB
+  windows, already verified in Stage 1), rest ranks, run settings
+  (gain, fs, signal-trim, noise-offset, noise-window) and the PC trial list.
+  Windows are **not re-detected**.
+- The **raw CSVs** (located next to each trial's `log_path`) — all signal
+  values are recomputed from scratch here, then filtered as above.
+
+### Three figures (modes: USB gain 1, BLE gain 1, BLE gain 8; PC only)
+
+1. **`snr_raw_modes.(png|pdf)`** — ONE box plot, 3 boxes. One data point =
+   one contraction, **strong AND weak pooled**, both subjects; the 16 channels
+   are averaged into ONE signal value per contraction:
+   - *signal* = mean over the 16 channels of the mean envelope in the
+     contraction window (trimmed `--signal-trim` = 5 % each side);
+   - *noise* = per channel, mean envelope in the rest window ending
+     `--noise-offset` (1.530612 s) before onset and spanning `--noise-window`
+     (50 % of contraction duration); averaged over **weak rests 2–4** (the
+     first weak rest is skipped — it follows the maximal strong block), then
+     averaged over the 16 channels → one floor per trial;
+   - **SNR = 20·log10(signal / noise)** in dB, one value per contraction.
+2. **`mdf_raw_modes.(png|pdf)`** — ONE box plot, same 3 boxes. Per-channel
+   MDF over the whole recording (gap-aware segment-averaged FFT of the
+   bandpassed signal, median frequency of the magnitude² spectrum), pooled
+   over all 16 channels × 2 subjects per mode (n = 32 each).
+3. **`fft_raw_modes.(png|pdf)`** — one spectrum curve per mode with a
+   dashed vertical line at that curve's MDF. Per mode, all channels of all
+   recordings are concatenated into one long vector (gap samples removed;
+   per-channel mean subtracted so boundary steps stay small) and **ONE single
+   FFT** is computed over the whole vector — no Welch/chunk averaging. The
+   magnitude (|rfft|/N, µV) is **max-pooled onto the fs/nfft grid**
+   (nfft = 8192 → ~0.12 Hz bins — the same grid `emg_isometric.py` uses for
+   its FFT figure) and plotted on a **linear axis stopping at 0** (classic
+   FFT look; x-limit 0–500 Hz, same as `emg_isometric.py`). Max-pooling keeps
+   narrow peaks such as the 50 Hz mains line; the MDF line itself is computed
+   from the full-resolution spectrum (pooling is display-only).
+
+### Outputs (written to `--out-dir`)
+
+- `snr_raw_modes.png|pdf`, `mdf_raw_modes.png|pdf`, `fft_raw_modes.png|pdf`
+- `snr_raw_modes_plot_data.csv` — per-contraction SNR rows (mode, trial,
+  subject, type, window, signal µV, noise floor µV, SNR dB)
+- `mdf_raw_modes_plot_data.csv` — per-channel MDF rows
+- `fft_raw_modes_plot_data.csv` — the plotted spectra on the same ~0.12 Hz
+  grid as the figure (mode, f_hz, magnitude_uV, mdf_hz; 4096 rows per mode).
+- A console summary table with all 3 SNR and 3 MDF numbers.
+
+### Verified behaviour (20–450 Hz, no notch)
+
+| Mode | SNR mean (dB) | MDF box mean (Hz) | MDF pooled-curve (Hz) |
+|------|--------------:|-------------------:|----------------------:|
+| USB gain 1 | 26.1 | 78.5 | 78.8 |
+| BLE gain 1 | 27.1 | 70.6 | 63.9 |
+| BLE gain 8 | 33.4 | 67.4 | 59.9 |
+
+- MDF values (60–79 Hz) are physiologically typical for surface EMG.
+- The 50 Hz mains peak is **present** in the spectra (+3–4 dB above the local
+  floor) — expected, since no notch is applied.
+- Stopbands verified: < 20 Hz and > 450 Hz strongly attenuated.
+
+---
+
+
 
 ```bash
 cd /home/karl/repos/Sokosti_tools
@@ -232,6 +327,10 @@ bash rerun_iso_dor.sh
 # 3. plots
 .venv/bin/python plot_isometric_trials.py \
     /home/karl/Documents/Master_Thesis/Testing/application_testing/emg_isometric_summary.ods
+
+# 4. raw-mode plots (raw CSVs + ODS; no bandpass/notch - see Stage 4)
+.venv/bin/python emg_isometric_tools/plot_isometric_raw_modes.py \
+    emg_isometric_tools/emg_isometric_summary.ods --out-dir emg_isometric_tools
 ```
 
 Python environment: the workspace venv (`.venv/bin/python`, Python 3.12) has

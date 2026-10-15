@@ -25,9 +25,14 @@ shows one coloured box per walk type with that row's PER-CYCLE values
 in the metric selected with --box-metric: rms = sqrt(mean(y^2)) over
 the cycle's samples (default), p2p = cycle max - min.
 
-The cycle graphs use open panels (no top/right spines) and share ONE
-x axis (% of gait cycle, labelled once under the whole figure); the box
-plots keep their categorical walk-type x axis.
+The cycle graphs use the sit-stand open-panel style: all spines
+removed (bottom spine only on the bottom row), no tick notches, one
+uniform y-text size, dashed gray grid. They share ONE x axis (% of
+gait cycle) whose tick marks and labels appear only on the bottom row,
+and the cycle x label is printed TWICE -- under each bottom-row
+ang-rate overlay -- never centred under the figure. The figure's only
+legend lives in the top-left subplot. The box plots keep their fully
+framed, categorical (walk-type) x axis.
 
 Also writes gait_overlay_plot_data.csv (plotted mean/CI curves) and
 gait_overlay_box_data.csv (BOTH per-cycle box metrics: one row per
@@ -77,6 +82,10 @@ CYCLE_XLABEL = "% of gait cycle (0 = heel strike)"
 BOX_METRICS = ("rms", "p2p")
 METRIC_LABEL = {"rms": "RMS", "p2p": "peak-to-peak"}
 
+# y-axis text (tick numbers + y labels) uses ONE size on every cycle
+# panel, like the sit-stand group overlay.
+AXIS_TEXT_FSIZE = 10
+
 
 def find_max_trials(base, walk_type, source="PC", gain=1):
     """The gain-1 Max trials for one walk type, keyed by connection
@@ -123,15 +132,19 @@ def mean_and_ci(curves):
     return mean, ci, n
 
 
-def _open(ax):
-    """Open panel style: keep only the left and bottom spines."""
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
+def _open(ax, keep_bottom=False):
+    """Open panel style (sit-stand reference example): all spines
+    removed so the panels have no box; optionally keep the bottom spine
+    (the x-axis line) for the lowest panel."""
+    for s in ("top", "bottom", "left", "right"):
+        ax.spines[s].set_visible(s == "bottom" and keep_bottom)
 
 
-def draw_overlay(ax, curves_by_walk, label, unit, title):
+def draw_overlay(ax, curves_by_walk, label, unit, title,
+                 show_legend=False, keep_bottom=False):
     """Slow/Fast/Incline means + 90 % CI on one open axes, one colour per
-    walk type; no individual cycle traces."""
+    walk type; no individual cycle traces. Only the top-left subplot of
+    the figure gets the legend (show_legend)."""
     n_plotted = 0
     for walk in WALK_TYPES:
         data = curves_by_walk.get(walk)
@@ -151,13 +164,15 @@ def draw_overlay(ax, curves_by_walk, label, unit, title):
     if n_plotted == 0:
         ax.text(0.5, 0.5, "No data", ha="center", va="center",
                 transform=ax.transAxes, fontsize=8)
-    else:
-        ax.legend(loc="upper right", fontsize=7)
-    ax.set_ylabel(f"{label} ({unit})")
+    elif show_legend:
+        ax.legend(loc="upper left", fontsize=7)
+    ax.set_ylabel(f"{label} ({unit})", fontsize=AXIS_TEXT_FSIZE)
+    ax.tick_params(axis="y", labelsize=AXIS_TEXT_FSIZE)
+    ax.tick_params(left=False)  # no y tick notches (labels stay)
     if title:
         ax.set_title(title, fontsize=10)
-    _open(ax)
-    ax.grid(True, alpha=0.3)
+    _open(ax, keep_bottom=keep_bottom)
+    ax.grid(True, which="both", linestyle="--", color="gray", alpha=0.5)
 
 
 def draw_boxplot(ax, vals_by_walk, metric, unit, title):
@@ -199,10 +214,12 @@ def draw_boxplot(ax, vals_by_walk, metric, unit, title):
 def make_overlay_figure(curves, box, metric, suptitle, out_path):
     """One figure, 3 rows (signals) x 4 columns
     [USB overlay | USB box | BLE overlay | BLE box]. The cycle overlays
-    share ONE x axis (% of cycle, labelled once under the whole figure)
-    and stay open; the box plots show the per-cycle values of `metric`
-    (rms or p2p) on their categorical walk-type x axis with labels only
-    on the bottom row."""
+    share ONE x axis (% of cycle) with tick marks/labels only on the
+    bottom row; its x label is set individually under each bottom-row
+    ang-rate overlay (two instances, no figure-centred supxlabel). The
+    figure's only legend lives in the top-left subplot. Box plots stay
+    framed and show the per-cycle values of `metric` (rms or p2p) on
+    their categorical walk-type x axis."""
     fig = plt.figure(figsize=(17, 11), constrained_layout=True)
     fig.suptitle(suptitle)
     outer = fig.add_gridspec(3, 4, width_ratios=[1.4, 0.6, 1.4, 0.6])
@@ -226,25 +243,31 @@ def make_overlay_figure(curves, box, metric, suptitle, out_path):
                 anchor = ax
             ax.sharex(anchor)
             cycle_axes.append(ax)
+            is_bottom = row == len(SIGNALS) - 1
             draw_overlay(ax, by_walk, label, unit,
-                         f"{conn}: {label}" if row == 0 else None)
+                         f"{conn}: {label}" if row == 0 else None,
+                         show_legend=(row == 0 and k == 0),
+                         keep_bottom=is_bottom)
+            if is_bottom:
+                ax.set_xlabel(CYCLE_XLABEL)
             # --- box-plot cell (directly right of its overlay) ---
             bx = fig.add_subplot(outer[row, plot_col + 1])
             box_axes.append(bx)
             draw_boxplot(bx, vals_by_walk, metric, unit,
                          f"{conn}: {METRIC_LABEL[metric]}"
                          if row == 0 else None)
-            if row == len(SIGNALS) - 1:
+            if is_bottom:
                 bottom_axes.extend((ax, bx))
 
-    # One common cycle-% x axis: tick labels only on the bottom row
-    # (same for the box-plot walk-type labels).
+    # One common cycle-% x axis: tick marks and labels only on the
+    # bottom row (same for the box-plot walk-type labels); the cycle
+    # panels keep no y tick notches - sit-stand style.
     anchor.set_xlim(0.0, 100.0)
     for ax in cycle_axes:
-        ax.tick_params(labelbottom=ax in bottom_axes)
+        show = ax in bottom_axes
+        ax.tick_params(axis="x", bottom=show, labelbottom=show)
     for bx in box_axes:
         bx.tick_params(labelbottom=bx in bottom_axes)
-    fig.supxlabel(CYCLE_XLABEL)
 
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
@@ -383,7 +406,7 @@ def main(argv=None):
                         })
 
     fig_path = os.path.join(args.out_dir, "gait_group_overlay.png")
-    suptitle = (f"Gait-cycle overlays ({SUBJECT}): gain-{args.gain} "
+    suptitle = (f"Gait-cycle overlays (Subject 1): gain-{args.gain} "
                 f"{args.source} recordings - slow / fast / incline walk, "
                 "mean + 90% CI, boxes = "
                 f"{METRIC_LABEL[args.box_metric]}")
