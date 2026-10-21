@@ -379,12 +379,12 @@ def draw_box(ax, x, vals, facecolor, mean_color, fmt="{:.1f}"):
 
 
 def mode_xticklabels(groups, ns):
-    return [f"{g['label']}\nMax + Karl\nn = {n}"
+    return [f"{g['connection']} Gain {int(g['gain'])},\nn = {n}"
             for g, n in zip(groups, ns)]
 
 
 def plot_box_figure(groups, values, y_label, title, out_stem, facecolor,
-                    mean_color, fmt, explanation, out_dir, show):
+                    mean_color, fmt, out_dir, show):
     fig, ax = plt.subplots(figsize=(9, 6.5))
     centres = np.arange(1, len(groups) + 1)
     for xc, vals in zip(centres, values):
@@ -397,9 +397,7 @@ def plot_box_figure(groups, values, y_label, title, out_stem, facecolor,
     ax.set_title(title, fontsize=13)
     ax.grid(True, axis="y", linestyle="--", alpha=0.5)
     ax.tick_params(axis="y", labelsize=13)
-    fig.text(0.5, 0.015, explanation, ha="center", va="bottom",
-             fontsize=9, wrap=True)
-    fig.tight_layout(rect=(0, 0.08, 1, 1))
+    fig.tight_layout()
     for ext in ("png", "pdf"):
         fig.savefig(os.path.join(out_dir, f"{out_stem}.{ext}"), dpi=300)
     if show:
@@ -514,33 +512,15 @@ def main():
     if any(len(v) == 0 for v in snr_values + mdf_values):
         raise SystemExit("Empty SNR/MDF group - check the mode grouping.")
 
-    mdf_count_details = []
-    for g, vals in zip(groups, mdf_values):
-        recording_count = len(g["trial_ids"])
-        possible_count = recording_count * 16
-        mdf_count_details.append(
-            f"{g['label']}: {recording_count} recordings × 16 channels = "
-            f"{possible_count} possible estimates, {len(vals)} valid")
-
-    disclaimer = ("SENIAM bandpass 20-450 Hz (fs 980), no 50 Hz notch")
     plot_box_figure(
         groups, snr_values, "SNR (dB)",
-        f"SNR: strong + weak pooled, 16 channels averaged per contraction, "
-        f"noise = rests 2-4\n{disclaimer}",
+        "Signal-to-Noise Ratio",
         "snr_raw_modes", SIGNAL_COLOR, SIGNAL_MEAN_COLOR, "{:.1f}",
-        "Each estimate is one contraction in one recording: its signal "
-        "averages all 16 channels. Strong and weak contractions are pooled. "
-        "n counts valid contraction estimates across the recordings for "
-        "Max and Karl; it is not a channel count.",
         out_dir, not args.no_show)
     plot_box_figure(
         groups, mdf_values, "MDF (Hz)",
-        f"MDF per channel over the whole recording, subjects and channels "
-        f"pooled\n{disclaimer}",
+        "Median Frequency",
         "mdf_raw_modes", MDF_COLOR, MDF_MEAN_COLOR, "{:.1f}",
-        "Each estimate is one channel's MDF over one whole recording. "
-        "n counts valid recording × channel pairs (not contractions). "
-        + "; ".join(mdf_count_details) + ".",
         out_dir, not args.no_show)
 
     freqs, mags, mdfs, fft_sample_counts = [], [], [], []
