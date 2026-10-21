@@ -82,9 +82,21 @@ CYCLE_XLABEL = "% of gait cycle (0 = heel strike)"
 BOX_METRICS = ("rms", "p2p")
 METRIC_LABEL = {"rms": "RMS", "p2p": "peak-to-peak"}
 
-# y-axis text (tick numbers + y labels) uses ONE size on every cycle
-# panel, like the sit-stand group overlay.
-AXIS_TEXT_FSIZE = 10
+# ===== FONT SIZES (tune all at once here) =====
+# y-axis text (tick numbers + y labels) on the cycle panels
+AXIS_TEXT_FSIZE = 15
+# x-axis tick numbers on the bottom row (% of cycle axis)
+XTICK_FSIZE = 15
+# figure-wide top title (suptitle)
+SUPTITLE_FSIZE = 20
+# panel titles (e.g. "USB: dyn accel PC1")
+TITLE_FSIZE = 15
+# small "No data" placeholder text inside empty panels
+NO_DATA_FSIZE = 9
+# legend text (top-left overlay panel)
+LEGEND_FSIZE = 15
+# box-plot y label + tick text and walk-type x tick labels
+BOX_TEXT_FSIZE = 13
 
 
 def find_max_trials(base, walk_type, source="PC", gain=1):
@@ -140,11 +152,10 @@ def _open(ax, keep_bottom=False):
         ax.spines[s].set_visible(s == "bottom" and keep_bottom)
 
 
-def draw_overlay(ax, curves_by_walk, label, unit, title,
-                 show_legend=False, keep_bottom=False):
+def draw_overlay(ax, curves_by_walk, label, unit, title, keep_bottom=False):
     """Slow/Fast/Incline means + 90 % CI on one open axes, one colour per
-    walk type; no individual cycle traces. Only the top-left subplot of
-    the figure gets the legend (show_legend)."""
+    walk type; no individual cycle traces. No legend here - the legend
+    lives in its own row between the suptitle and the subplots."""
     n_plotted = 0
     for walk in WALK_TYPES:
         data = curves_by_walk.get(walk)
@@ -163,14 +174,12 @@ def draw_overlay(ax, curves_by_walk, label, unit, title,
                 label=f"{walk} mean (n={n})")
     if n_plotted == 0:
         ax.text(0.5, 0.5, "No data", ha="center", va="center",
-                transform=ax.transAxes, fontsize=8)
-    elif show_legend:
-        ax.legend(loc="upper left", fontsize=7)
+                transform=ax.transAxes, fontsize=NO_DATA_FSIZE)
     ax.set_ylabel(f"{label} ({unit})", fontsize=AXIS_TEXT_FSIZE)
     ax.tick_params(axis="y", labelsize=AXIS_TEXT_FSIZE)
     ax.tick_params(left=False)  # no y tick notches (labels stay)
     if title:
-        ax.set_title(title, fontsize=10)
+        ax.set_title(title, fontsize=TITLE_FSIZE)
     _open(ax, keep_bottom=keep_bottom)
     ax.grid(True, which="both", linestyle="--", color="gray", alpha=0.5)
 
@@ -190,7 +199,7 @@ def draw_boxplot(ax, vals_by_walk, metric, unit, title):
         names.append(walk)
     if not series:
         ax.text(0.5, 0.5, "No data", ha="center", va="center",
-                transform=ax.transAxes, fontsize=8)
+                transform=ax.transAxes, fontsize=NO_DATA_FSIZE)
     else:
         bp = ax.boxplot(series, positions=positions, widths=0.55,
                         patch_artist=True, showfliers=True,
@@ -203,26 +212,31 @@ def draw_boxplot(ax, vals_by_walk, metric, unit, title):
             box.set_alpha(0.55)
             box.set_edgecolor(color)
         ax.set_xticks(positions)
-        ax.set_xticklabels(names)
+        ax.set_xticklabels(names, fontsize=BOX_TEXT_FSIZE)
         ax.set_xlim(0.5, len(WALK_TYPES) + 0.5)
-    ax.set_ylabel(f"{METRIC_LABEL[metric]} ({unit})")
+    ax.set_ylabel(f"{METRIC_LABEL[metric]} ({unit})",
+                  fontsize=AXIS_TEXT_FSIZE)
+    ax.tick_params(axis="y", labelsize=BOX_TEXT_FSIZE)
     if title:
-        ax.set_title(title, fontsize=10)
+        ax.set_title(title, fontsize=TITLE_FSIZE)
     ax.grid(True, axis="y", alpha=0.3)
 
 
 def make_overlay_figure(curves, box, metric, suptitle, out_path):
-    """One figure, 3 rows (signals) x 4 columns
+    """One figure, legend row + 3 rows (signals) x 4 columns
     [USB overlay | USB box | BLE overlay | BLE box]. The cycle overlays
     share ONE x axis (% of cycle) with tick marks/labels only on the
     bottom row; its x label is set individually under each bottom-row
     ang-rate overlay (two instances, no figure-centred supxlabel). The
-    figure's only legend lives in the top-left subplot. Box plots stay
-    framed and show the per-cycle values of `metric` (rms or p2p) on
-    their categorical walk-type x axis."""
-    fig = plt.figure(figsize=(17, 11), constrained_layout=True)
-    fig.suptitle(suptitle)
-    outer = fig.add_gridspec(3, 4, width_ratios=[1.4, 0.6, 1.4, 0.6])
+    figure legend sits in its own row between the suptitle and the
+    subplots, applying to all overlay panels. Box plots stay framed and
+    show the per-cycle values of `metric` (rms or p2p) on their
+    categorical walk-type x axis."""
+    fig = plt.figure(figsize=(17, 10.5), constrained_layout=True)
+    fig.suptitle(suptitle, fontsize=SUPTITLE_FSIZE)
+    # row 0 = legend band; rows 1-3 = the signal rows
+    outer = fig.add_gridspec(4, 4, height_ratios=[0.35, 1, 0.95, 0.95],
+                             width_ratios=[1.4, 0.6, 1.4, 0.6])
     anchor = None
     cycle_axes = []
     box_axes = []
@@ -238,7 +252,7 @@ def make_overlay_figure(curves, box, metric, suptitle, out_path):
                             for w, arr in box.get(conn, {}).items()
                             if col in arr}
             # --- overlay cell (left of the pair) ---
-            ax = fig.add_subplot(outer[row, plot_col])
+            ax = fig.add_subplot(outer[row + 1, plot_col])
             if anchor is None:
                 anchor = ax
             ax.sharex(anchor)
@@ -246,12 +260,11 @@ def make_overlay_figure(curves, box, metric, suptitle, out_path):
             is_bottom = row == len(SIGNALS) - 1
             draw_overlay(ax, by_walk, label, unit,
                          f"{conn}: {label}" if row == 0 else None,
-                         show_legend=(row == 0 and k == 0),
                          keep_bottom=is_bottom)
             if is_bottom:
-                ax.set_xlabel(CYCLE_XLABEL)
+                ax.set_xlabel(CYCLE_XLABEL, fontsize=AXIS_TEXT_FSIZE)
             # --- box-plot cell (directly right of its overlay) ---
-            bx = fig.add_subplot(outer[row, plot_col + 1])
+            bx = fig.add_subplot(outer[row + 1, plot_col + 1])
             box_axes.append(bx)
             draw_boxplot(bx, vals_by_walk, metric, unit,
                          f"{conn}: {METRIC_LABEL[metric]}"
@@ -259,17 +272,40 @@ def make_overlay_figure(curves, box, metric, suptitle, out_path):
             if is_bottom:
                 bottom_axes.extend((ax, bx))
 
+    # Figure legend in its own grid row (row 0), between suptitle and
+    # subplots: collect labelled handles from the overlay panels
+    # (deduplicated) and draw them in one row.
+    leg_ax = fig.add_subplot(outer[0, :])
+    leg_ax.axis("off")
+    handles, labels = [], []
+    for ax in cycle_axes:
+        h, l = ax.get_legend_handles_labels()
+        handles += h
+        labels += l
+    seen, uniq = set(), []
+    for h, l in zip(handles, labels):
+        if l not in seen:
+            seen.add(l)
+            uniq.append((h, l))
+    leg_ax.legend([h for h, _ in uniq], [l for _, l in uniq],
+                  loc="center", frameon=True, edgecolor="black",
+                  ncol=len(WALK_TYPES) * 2,
+                  fontsize=LEGEND_FSIZE)
+
     # One common cycle-% x axis: tick marks and labels only on the
     # bottom row (same for the box-plot walk-type labels); the cycle
     # panels keep no y tick notches - sit-stand style.
     anchor.set_xlim(0.0, 100.0)
     for ax in cycle_axes:
         show = ax in bottom_axes
-        ax.tick_params(axis="x", bottom=show, labelbottom=show)
+        ax.tick_params(axis="x", bottom=show, labelbottom=show,
+                       labelsize=XTICK_FSIZE)
     for bx in box_axes:
-        bx.tick_params(labelbottom=bx in bottom_axes)
+        bx.tick_params(labelbottom=bx in bottom_axes,
+                       labelsize=BOX_TEXT_FSIZE)
 
-    fig.savefig(out_path, dpi=150)
+    for ext in ("png", "pdf"):
+        fig.savefig(os.path.splitext(out_path)[0] + f".{ext}", dpi=150)
     plt.close(fig)
 
 
@@ -406,12 +442,12 @@ def main(argv=None):
                         })
 
     fig_path = os.path.join(args.out_dir, "gait_group_overlay.png")
-    suptitle = (f"Gait-cycle overlays (Subject 1): gain-{args.gain} "
+    suptitle = (f"Gait-cycle overlays (Subject 2): gain-{args.gain} "
                 f"{args.source} recordings - slow / fast / incline walk, "
                 "mean + 90% CI, boxes = "
                 f"{METRIC_LABEL[args.box_metric]}")
     make_overlay_figure(curves, box, args.box_metric, suptitle, fig_path)
-    print(f"\nwritten: {fig_path}")
+    print(f"\nwritten: {os.path.splitext(fig_path)[0]}.png/.pdf")
 
     csv_path = os.path.join(args.out_dir, "gait_overlay_plot_data.csv")
     plot_data = pd.DataFrame(plot_rows)
