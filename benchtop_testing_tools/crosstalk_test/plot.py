@@ -230,6 +230,10 @@ def plot_crosstalk_matrix(crosstalk, output_path):
         im = ax.imshow(xt, cmap="RdYlGn_r", vmin=vmin, vmax=vmax, aspect="auto")
         diag = np.eye(16, dtype=bool)
         ax.imshow(np.where(diag, 1, 0), cmap="gray", alpha=0.3, vmin=0, vmax=1, aspect="auto")
+
+        # Separator between chip 1 (ch 1-8) and chip 2 (ch 9-16)
+        ax.axvline(7.5, color="black", linewidth=1, linestyle="-")
+        ax.axhline(7.5, color="black", linewidth=1, linestyle="-")
         
         # Draw sensor/hatch marks
         for i in range(16):
