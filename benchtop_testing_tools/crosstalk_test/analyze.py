@@ -16,7 +16,6 @@ import numpy as np
 import pandas as pd
 from scipy import signal as sp_signal
 from scipy.optimize import least_squares
-from scipy.integrate import trapezoid
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -178,7 +177,7 @@ def amplitude_rms_sqrt2(y):
 # NOISE REFERENCE FROM BASELINE
 # ============================================================================
 
-def compute_noise_reference(baseline_seg_df, fs, freqs, rms_bands):
+def compute_noise_reference(baseline_seg_df, fs, freqs):
     n_seg_samples = int(fs * SEGMENT_DURATION)
     noise_ref = {}
     for ch in range(1, N_CHANNELS + 1):
@@ -193,28 +192,14 @@ def compute_noise_reference(baseline_seg_df, fs, freqs, rms_bands):
             amps = [a for a in amps if np.isfinite(a)]
             fft_amps[f0] = float(np.median(amps)) if amps else np.nan
 
-        rms_vals = {}
-        for band_name, (f_low, f_high) in rms_bands.items():
-            nperseg = min(2048, len(ch_uV))
-            freqs_psd, psd = sp_signal.welch(ch_uV, fs=fs, window="hann", nperseg=nperseg,
-                                              noverlap=nperseg // 2, scaling="density")
-            mask = (freqs_psd >= f_low) & (freqs_psd <= f_high)
-            if mask.sum() > 0:
-                variance = trapezoid(psd[mask], freqs_psd[mask])
-                rms_vals[band_name] = float(np.sqrt(variance))
-            else:
-                rms_vals[band_name] = np.nan
-
         nperseg = min(2048, len(ch_uV))
         freqs_welch, psd_welch = sp_signal.welch(ch_uV, fs=fs, window="hann", nperseg=nperseg,
                                                   noverlap=nperseg // 2, scaling="density")
-        noise_density_nv = np.sqrt(psd_welch) * 1e9
 
         noise_ref[ch] = {
             "fft_amps_uV": fft_amps,
-            "rms_bands_uV": rms_vals,
             "welch_freqs_hz": freqs_welch,
-            "welch_density_nv": noise_density_nv,
+            "welch_psd_uv2": psd_welch,
             "mean_uV": float(np.mean(ch_uV)),
             "rms_uV": float(np.sqrt(np.mean(ch_uV**2))),
             "vpp_uV": float(np.ptp(ch_uV)),
@@ -273,8 +258,7 @@ def main():
 
     # --- Compute noise reference ---
     print("\n[2/4] Computing noise reference...")
-    rms_bands = {"0.5-100Hz": (0.5, 100), "20-450Hz": (20, 450)}
-    noise_ref = compute_noise_reference(baseline_seg, FS, SINE_F0, rms_bands)
+    noise_ref = compute_noise_reference(baseline_seg, FS, SINE_F0)
     print(f"  Noise reference computed for {len(noise_ref)} channels")
 
     # --- Process crosstalk files ---
@@ -324,7 +308,7 @@ def main():
                     f_psd, psd = sp_signal.welch(ch_data_uV[c], fs=FS, window="hann",
                                                  nperseg=nperseg, noverlap=nperseg // 2,
                                                  scaling="density")
-                    driven_psds[(f0, amp, ch, c)] = (f_psd, np.sqrt(psd) * 1e9)
+                    driven_psds[(f0, amp, ch, c)] = (f_psd, psd)
 
             amp_per_channel = {}
             for c in range(1, 17):
@@ -413,9 +397,7 @@ def main():
         noise_data.append((
             ch,
             nr["fft_amps_uV"].get(10, np.nan), nr["fft_amps_uV"].get(100, np.nan),
-            nr["rms_bands_uV"].get("0.5-100Hz", np.nan),
-            nr["rms_bands_uV"].get("20-450Hz", np.nan),
-            nr["welch_freqs_hz"], nr["welch_density_nv"],
+            nr["welch_freqs_hz"], nr["welch_psd_uv2"],
             nr["mean_uV"], nr["rms_uV"], nr["vpp_uV"],
         ))
 
@@ -444,13 +426,11 @@ def main():
              noise_ch=np.array([m[0] for m in noise_data]),
              noise_fft10=np.array([m[1] for m in noise_data]),
              noise_fft100=np.array([m[2] for m in noise_data]),
-             noise_rms_05_100=np.array([m[3] for m in noise_data]),
-             noise_rms_20_450=np.array([m[4] for m in noise_data]),
-             noise_welch_freqs=[m[5] for m in noise_data],
-             noise_welch_density=[m[6] for m in noise_data],
-             noise_mean_uV=np.array([m[7] for m in noise_data]),
-             noise_rms_uV=np.array([m[8] for m in noise_data]),
-             noise_vpp_uV=np.array([m[9] for m in noise_data]),
+             noise_welch_freqs=[m[3] for m in noise_data],
+             noise_welch_psd_uv2=[m[4] for m in noise_data],
+             noise_mean_uV=np.array([m[5] for m in noise_data]),
+             noise_rms_uV=np.array([m[6] for m in noise_data]),
+             noise_vpp_uV=np.array([m[7] for m in noise_data]),
              psd_keys=np.array([f"{f0}_{amp}_{ch}_{c}" for (f0, amp, ch, c) in driven_psds.keys()], dtype=object),
              psd_freqs=np.array([v[0] for v in driven_psds.values()], dtype=object),
              psd_density_nv=np.array([v[1] for v in driven_psds.values()], dtype=object),
@@ -490,8 +470,6 @@ def main():
             "vpp_uV": nr["vpp_uV"],
             "fft_amp_10Hz_uV": nr["fft_amps_uV"].get(10, np.nan),
             "fft_amp_100Hz_uV": nr["fft_amps_uV"].get(100, np.nan),
-            "rms_0.5-100Hz_uV": nr["rms_bands_uV"].get("0.5-100Hz", np.nan),
-            "rms_20-450Hz_uV": nr["rms_bands_uV"].get("20-450Hz", np.nan),
         })
     noise_df = pd.DataFrame(noise_rows)
     noise_df.to_csv(os.path.join(TABLE_DIR, "noise_reference.csv"), index=False)

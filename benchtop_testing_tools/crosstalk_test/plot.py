@@ -13,6 +13,7 @@ import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from scipy.ndimage import uniform_filter1d
 
 # Paths
 OUTPUT_DIR = "/home/karl/repos/Sokosti_tools/benchtop_testing_tools/crosstalk_test/outputs"
@@ -23,6 +24,10 @@ TABLE_DIR = os.path.join(OUTPUT_DIR, "tables")
 # Constants
 FS = 1000
 N_CHANNELS = 16
+# Shared with standalone_baseline_test/plot.py so both baseline PSD figures
+# use the same y-axis (scale and limits) and are directly comparable.
+PSD_YLIM = (0.0, 2.5e-2)
+PSD_SMOOTH_BINS = 21  # moving-average window (~10 Hz at 0.49 Hz resolution)
 SINE_F0 = [10, 100]
 AMPLITUDES_MVPP = [2, 10]
 CHIP_OF = {ch: ("ads1299-1" if 1 <= ch <= 8 else "ads1299-2") for ch in range(1, 17)}
@@ -65,10 +70,8 @@ def load_interim():
         ch = int(d["noise_ch"][i])
         noise_ref[ch] = {
             "fft_amps_uV": {10: float(d["noise_fft10"][i]), 100: float(d["noise_fft100"][i])},
-            "rms_bands_uV": {"0.5-100Hz": float(d["noise_rms_05_100"][i]),
-                             "20-450Hz": float(d["noise_rms_20_450"][i])},
             "welch_freqs_hz": d["noise_welch_freqs"][i],
-            "welch_density_nv": d["noise_welch_density"][i],
+            "welch_psd_uv2": d["noise_welch_psd_uv2"][i],
             "mean_uV": float(d["noise_mean_uV"][i]),
             "rms_uV": float(d["noise_rms_uV"][i]),
             "vpp_uV": float(d["noise_vpp_uV"][i]),
@@ -160,13 +163,12 @@ def plot_psd_overlay(noise_ref, driven_psds, output_dir):
                 if key not in driven_psds:
                     continue
                 f_psd, dens = driven_psds[key]
-                # dens is in nV/sqrt(Hz); dens**2 is nV²/Hz; /1e12 -> mV²/Hz
-                ax.plot(f_psd, dens**2 / 1e12, color=color, linewidth=0.8,
+                # dens is in uV²/Hz; /1e6 -> mV²/Hz
+                ax.plot(f_psd, dens / 1e6, color=color, linewidth=0.8,
                         alpha=alpha, label=label)
             if driven_ch in noise_ref:
                 nr = noise_ref[driven_ch]
-                dens = nr["welch_density_nv"]
-                ax.plot(nr["welch_freqs_hz"], dens**2 / 1e12, color="gray",
+                ax.plot(nr["welch_freqs_hz"], nr["welch_psd_uv2"] / 1e6, color="gray",
                         linewidth=0.8, alpha=0.9, label=f"Baseline CH{driven_ch}")
             ax.set_xscale("log")
             ax.set_yscale("log")
@@ -404,14 +406,12 @@ def export_summary_table(crosstalk, output_path):
 
 
 def plot_baseline_noise(noise_ref, output_path):
+    """Per-channel whole-spectrum RMS noise bar chart (0 to Nyquist)."""
     channels = list(range(1, 17))
-    rms_05_100 = [noise_ref[ch]["rms_bands_uV"].get("0.5-100Hz", np.nan) for ch in channels]
-    rms_20_450 = [noise_ref[ch]["rms_bands_uV"].get("20-450Hz", np.nan) for ch in channels]
+    rms = [noise_ref[ch]["rms_uV"] for ch in channels]
     fig, ax = plt.subplots(figsize=_fig_size(7.0, 0.5))
     x = np.arange(len(channels))
-    width = 0.35
-    ax.bar(x - width / 2, rms_05_100, width, label="0.5-100 Hz", color="#4472C4")
-    ax.bar(x + width / 2, rms_20_450, width, label="20-450 Hz", color="#ED7D31")
+    ax.bar(x, rms, 0.6, color="#4472C4", label="RMS (0-500 Hz)")
     ax.axvline(7.5, color="black", linestyle="--", linewidth=1, label="ADS1299 boundary")
     ax.set_xlabel("Channel")
     ax.set_ylabel("RMS noise (uV)")
@@ -427,17 +427,36 @@ def plot_baseline_noise(noise_ref, output_path):
 
 
 def plot_baseline_psd(noise_ref, output_path):
+    """PSD overlay of all 16 channels plus a smoothed central-tendency line.
+
+    The central line is the across-channel median per frequency bin (the
+    middle of the distribution), smoothed with a moving-average filter
+    along frequency. Y-scale and y-limits match the standalone tool's
+    baseline PSD figure (PSD_YLIM)."""
     fig, ax = plt.subplots(figsize=_fig_size(7.0, 0.6))
     colors = plt.cm.tab20(np.linspace(0, 1, 16))
+    freqs = None
+    densities = []
     for ch in range(1, 17):
         nr = noise_ref[ch]
-        ax.plot(nr["welch_freqs_hz"], nr["welch_density_nv"], color=colors[ch - 1], label=f"CH{ch}", linewidth=0.7)
+        freqs = nr["welch_freqs_hz"]
+        densities.append(np.asarray(nr["welch_psd_uv2"], dtype=float))
+        ax.plot(freqs, densities[-1], color=colors[ch - 1], label=f"CH{ch}", linewidth=0.7)
+    # Middle of the across-channel distribution at each frequency,
+    # smoothed with a moving-average filter.
+    median_psd = np.median(np.vstack(densities), axis=0)
+    median_smooth = uniform_filter1d(median_psd, size=PSD_SMOOTH_BINS,
+                                     mode="nearest")
+    ax.plot(freqs, median_smooth, color="black", linewidth=1.8, zorder=5,
+            label="Median (smoothed)")
     for h in range(1, 11):
         ax.axvline(50 * h, color="red", linestyle=":", alpha=0.3, linewidth=0.5)
     ax.set_xlabel("Frequency (Hz)")
-    ax.set_ylabel("PSD (nV$^2$/Hz)")
+    ax.set_ylabel("PSD (uV$^2$/Hz)")
     ax.set_title("Baseline PSD – All 16 Channels", fontsize=10, fontweight="bold")
     ax.set_xlim([0, 500])
+    ax.set_yscale("linear")
+    ax.set_ylim(PSD_YLIM)
     ax.legend(fontsize=5.5, ncol=4, loc="upper right")
     plt.tight_layout()
     plt.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
@@ -455,22 +474,18 @@ def export_baseline_table(noise_ref, output_path):
             "Channel": ch,
             "RMS (uV)": round(nr["rms_uV"], 2),
             "Vpp (uV)": round(nr["vpp_uV"], 1),
-            "Noise 0.5-100Hz (uV)": round(nr["rms_bands_uV"].get("0.5-100Hz", np.nan), 2),
-            "Noise 20-450Hz (uV)": round(nr["rms_bands_uV"].get("20-450Hz", np.nan), 2),
         })
     df = pd.DataFrame(rows)
     medians = {
         "Channel": "Median",
         "RMS (uV)": round(df["RMS (uV)"].median(), 2),
         "Vpp (uV)": round(df["Vpp (uV)"].median(), 1),
-        "Noise 0.5-100Hz (uV)": round(df["Noise 0.5-100Hz (uV)"].median(), 2),
-        "Noise 20-450Hz (uV)": round(df["Noise 20-450Hz (uV)"].median(), 2),
     }
     df = pd.concat([df, pd.DataFrame([medians])], ignore_index=True)
     fig, ax = plt.subplots(figsize=_fig_size(7.0, 0.5))
     ax.axis("off")
 
-    numeric_cols = [1, 2, 3, 4]
+    numeric_cols = [1, 2]
     table = ax.table(cellText=df.values, colLabels=df.columns, loc="center", cellLoc="center")
     table.auto_set_font_size(False)
     table.set_fontsize(7)
@@ -513,7 +528,7 @@ def plot_snr_helper(noise_ref, crosstalk, output_path):
         snr_vals = []
         for ch in range(1, 17):
             A_sig = res["driven_amps_uV"].get(ch, np.nan)
-            noise_rms = noise_ref[ch]["rms_bands_uV"].get("0.5-100Hz", np.nan)
+            noise_rms = noise_ref[ch]["rms_uV"]
             if np.isfinite(A_sig) and np.isfinite(noise_rms) and noise_rms > 0:
                 snr = 20 * np.log10(A_sig / noise_rms)
             else:
@@ -523,9 +538,9 @@ def plot_snr_helper(noise_ref, crosstalk, output_path):
         ax.axhline(0, color="black", linewidth=0.5)
         ax.set_xlabel("Channel")
         ax.set_ylabel("SNR (dB)")
-        ax.set_title(f"{f0} Hz, {amp} mVpp – SNR (band: 0.5-100 Hz)", fontsize=8)
+        ax.set_title(f"{f0} Hz, {amp} mVpp – SNR (RMS: 0-500 Hz)", fontsize=8)
         ax.set_xticks(range(1, 17))
-    plt.suptitle("SNR Helper: 20*log10(A_sig / noise_RMS_0.5-100Hz)", fontsize=10, fontweight="bold")
+    plt.suptitle("SNR Helper: 20*log10(A_sig / noise_RMS_0-500Hz)", fontsize=10, fontweight="bold")
     plt.tight_layout()
     plt.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
     plt.savefig(output_path.replace(".png", ".pdf"), bbox_inches="tight", facecolor="white")

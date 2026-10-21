@@ -18,9 +18,10 @@ The only other filter is the 6 Hz low-pass of the linear envelope
 
 Three figures, one per connection/gain combination:
   1. snr_raw_modes - ONE box plot with 3 boxes (USB gain 1, BLE gain 1,
-     BLE gain 8). One data point = one contraction, strong AND weak pooled,
-     all subjects; the 16 channels are averaged into ONE signal value per
-     contraction:
+     BLE gain 8). One data point = one contraction in one recording, strong
+     AND weak pooled, all subjects; the 16 channels are averaged into ONE
+     signal value per contraction. The displayed n counts contraction-level
+     values, not channels or recordings:
         signal = mean over the 16 channels of the mean envelope in the
                  contraction window (trimmed --signal-trim each side)
         noise  = the trial's rest 2-4 floor: per channel the mean
@@ -30,10 +31,12 @@ Three figures, one per connection/gain combination:
                  weak rest is skipped: it follows the maximal strong block),
                  then averaged over the 16 channels
         SNR    = 20*log10(signal/noise) in dB
-  2. mdf_raw_modes - ONE box plot with the same 3 boxes: per-channel MDF
-     over the whole recording (gap-aware segment-averaged FFT of the
-     bandpassed signal, median frequency of the magnitude^2 spectrum),
-     pooled over all 16 channels x both subjects per mode.
+  2. mdf_raw_modes - ONE box plot with the same 3 boxes: one MDF per channel
+     per recording, calculated over the whole recording (gap-aware
+     segment-averaged FFT of the bandpassed signal, median frequency of the
+     magnitude^2 spectrum). The displayed n counts recording-channel pairs
+     (16 channels per recording); e.g. 2 recordings x 16 channels = 32
+     possible values.
   3. fft_raw_modes - one spectrum curve per mode with a vertical line at that
      curve's MDF. Per mode, all channels of all recordings are concatenated
      into one long vector (gap samples removed; per-channel mean subtracted
@@ -42,7 +45,9 @@ Three figures, one per connection/gain combination:
      max-pooled onto the fs/nfft grid (nfft = 8192 -> ~0.12 Hz bins), the same
      grid emg_isometric.py uses for its FFT figure, and plotted on a LINEAR
      axis stopping at 0 (classic FFT look; max-pooling keeps narrow peaks
-     such as the 50 Hz mains line).
+     such as the 50 Hz mains line). Its legend reports N, the total sample
+     count in that concatenated vector, and N/fs, the equivalent pooled
+     channel-data duration (not wall-clock recording time).
 
 Contraction windows, rest ranks and run settings come from
 emg_isometric_summary.ods (sheets 'snr' and 'trials'); the SIGNALS themselves
@@ -61,6 +66,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib import lines as mlines
 from matplotlib.patches import Rectangle
 from scipy import signal as sps
 
@@ -98,7 +104,9 @@ parser = argparse.ArgumentParser(
                 "FFT plots for the PC isometric trials.")
 parser.add_argument("ods", help="Path to the summary workbook "
                                 "(e.g. emg_isometric_summary.ods)")
-parser.add_argument("--out-dir", default=".", help="Folder for the output files (default: .)")
+parser.add_argument("--out-dir", default=None,
+                    help="Folder for the output files (default: same folder "
+                         "as the summary ODS file)")
 parser.add_argument("--no-show", action="store_true",
                     help="Save the figures without opening windows.")
 args = parser.parse_args()
@@ -317,7 +325,7 @@ def accumulate_vector(vec, acc):
 
 def single_fft_spectrum(acc, fs):
     """ONE FFT over the mode's full concatenated vector (no Welch/chunk
-    averaging). Returns (f_hz, magnitude, mdf_hz).
+    averaging). Returns (f_hz, magnitude, mdf_hz, sample_count).
 
     The magnitude (|rfft| / N, so units stay uV and modes of slightly
     different lengths stay comparable) is max-pooled onto the same
@@ -334,7 +342,7 @@ def single_fft_spectrum(acc, fs):
     # pooling is display-only
     mdf = median_frequency(f, mag ** 2)
     fc, mc = max_pool(f, mag, df=fs / NFFT_FFT)
-    return fc, mc, mdf
+    return fc, mc, mdf, n
 
 
 def max_pool(f, power, df=0.05):
@@ -371,11 +379,12 @@ def draw_box(ax, x, vals, facecolor, mean_color, fmt="{:.1f}"):
 
 
 def mode_xticklabels(groups, ns):
-    return [f"{g['label']}\nMax + Karl\nn = {n}" for g, n in zip(groups, ns)]
+    return [f"{g['label']}\nMax + Karl\nn = {n}"
+            for g, n in zip(groups, ns)]
 
 
 def plot_box_figure(groups, values, y_label, title, out_stem, facecolor,
-                    mean_color, fmt, out_dir, show):
+                    mean_color, fmt, explanation, out_dir, show):
     fig, ax = plt.subplots(figsize=(9, 6.5))
     centres = np.arange(1, len(groups) + 1)
     for xc, vals in zip(centres, values):
@@ -388,7 +397,9 @@ def plot_box_figure(groups, values, y_label, title, out_stem, facecolor,
     ax.set_title(title, fontsize=13)
     ax.grid(True, axis="y", linestyle="--", alpha=0.5)
     ax.tick_params(axis="y", labelsize=13)
-    fig.tight_layout()
+    fig.text(0.5, 0.015, explanation, ha="center", va="bottom",
+             fontsize=9, wrap=True)
+    fig.tight_layout(rect=(0, 0.08, 1, 1))
     for ext in ("png", "pdf"):
         fig.savefig(os.path.join(out_dir, f"{out_stem}.{ext}"), dpi=300)
     if show:
@@ -397,20 +408,38 @@ def plot_box_figure(groups, values, y_label, title, out_stem, facecolor,
         plt.close(fig)
 
 
-def plot_fft_figure(groups, freqs, mags, mdfs, fs, out_dir, show):
+def format_duration(seconds):
+    if seconds >= 3600:
+        return f"{seconds / 3600:.2f} h"
+    if seconds >= 60:
+        return f"{seconds / 60:.2f} min"
+    return f"{seconds:.1f} s"
+
+
+def plot_fft_figure(groups, freqs, mags, mdfs, sample_counts, fs, out_dir, show):
     fig, ax = plt.subplots(figsize=(11, 6.5))
-    for g, f, mag, mdf, color in zip(groups, freqs, mags, mdfs, MODE_COLORS):
+    for g, f, mag, mdf, n_samples, color in zip(
+            groups, freqs, mags, mdfs, sample_counts, MODE_COLORS):
+        pooled_duration = format_duration(n_samples / fs)
         ax.plot(f, mag, color=color, linewidth=0.8,
-                label=f"{g['label']}  (MDF {mdf:.1f} Hz)")
+                label=f"{g['label']} (MDF {mdf:.1f} Hz)\n"
+                      f"N = {n_samples:,} samples; "
+                      f"pooled recording data = {pooled_duration}")
         ax.axvline(mdf, color=color, linestyle="--", linewidth=1.5, alpha=0.85)
+    # Single legend entry for all MDF dashed lines
+    mdf_proxy = mlines.Line2D([], [], color="grey", linestyle="--",
+                              linewidth=1.5, alpha=0.85,
+                              label="Median frequency (MDF)")
+    handles, labels = ax.get_legend_handles_labels()
+    handles.append(mdf_proxy)
     ax.set_xlim(0, 500)                 # same x-limit as emg_isometric.py
     ax.set_ylim(bottom=0)               # linear magnitude stops at 0
     ax.set_xlabel("Frequency (Hz)", fontsize=15)
     ax.set_ylabel("FFT magnitude (µV)", fontsize=15)
-    ax.set_title("EMG spectra, all channels and recordings pooled per mode\n"
-                 "SENIAM 20-450 Hz bandpass, no 50 Hz notch; dashed line = MDF",
+    ax.set_title("EMG Spectra",
                  fontsize=13)
-    ax.legend(fontsize=13, loc="upper right")
+    ax.legend(
+        handles=handles, fontsize=10, loc="upper right")
     ax.grid(True, linestyle="--", alpha=0.5)
     ax.tick_params(labelsize=13)
     fig.tight_layout()
@@ -426,7 +455,8 @@ def plot_fft_figure(groups, freqs, mags, mdfs, fs, out_dir, show):
 def main():
     trials, snr = load(args.ods)
     groups, wins, trial_meta = build_groups(trials, snr)
-    out_dir = args.out_dir
+    out_dir = args.out_dir if args.out_dir is not None \
+        else os.path.dirname(os.path.abspath(args.ods))
     os.makedirs(out_dir, exist_ok=True)
 
     snr_rows, mdf_rows = [], []
@@ -484,30 +514,47 @@ def main():
     if any(len(v) == 0 for v in snr_values + mdf_values):
         raise SystemExit("Empty SNR/MDF group - check the mode grouping.")
 
+    mdf_count_details = []
+    for g, vals in zip(groups, mdf_values):
+        recording_count = len(g["trial_ids"])
+        possible_count = recording_count * 16
+        mdf_count_details.append(
+            f"{g['label']}: {recording_count} recordings × 16 channels = "
+            f"{possible_count} possible estimates, {len(vals)} valid")
+
     disclaimer = ("SENIAM bandpass 20-450 Hz (fs 980), no 50 Hz notch")
     plot_box_figure(
         groups, snr_values, "SNR (dB)",
         f"SNR: strong + weak pooled, 16 channels averaged per contraction, "
         f"noise = rests 2-4\n{disclaimer}",
         "snr_raw_modes", SIGNAL_COLOR, SIGNAL_MEAN_COLOR, "{:.1f}",
-        out_dir, args.no_show)
+        "Each estimate is one contraction in one recording: its signal "
+        "averages all 16 channels. Strong and weak contractions are pooled. "
+        "n counts valid contraction estimates across the recordings for "
+        "Max and Karl; it is not a channel count.",
+        out_dir, not args.no_show)
     plot_box_figure(
         groups, mdf_values, "MDF (Hz)",
         f"MDF per channel over the whole recording, subjects and channels "
         f"pooled\n{disclaimer}",
         "mdf_raw_modes", MDF_COLOR, MDF_MEAN_COLOR, "{:.1f}",
-        out_dir, args.no_show)
+        "Each estimate is one channel's MDF over one whole recording. "
+        "n counts valid recording × channel pairs (not contractions). "
+        + "; ".join(mdf_count_details) + ".",
+        out_dir, not args.no_show)
 
-    freqs, mags, mdfs = [], [], []
+    freqs, mags, mdfs, fft_sample_counts = [], [], [], []
     for g in groups:
         acc = fft_acc[g["label"]]
         if not acc["parts"]:
             raise SystemExit(f"No FFT data for mode {g['label']}")
-        f, mag, mdf = single_fft_spectrum(acc, fs_global)
+        f, mag, mdf, n_samples = single_fft_spectrum(acc, fs_global)
         freqs.append(f)
         mags.append(mag)
         mdfs.append(mdf)
-    plot_fft_figure(groups, freqs, mags, mdfs, fs_global, out_dir, args.no_show)
+        fft_sample_counts.append(n_samples)
+    plot_fft_figure(groups, freqs, mags, mdfs, fft_sample_counts, fs_global,
+                    out_dir, not args.no_show)
 
     # ===== plot data CSVs =====
     snr_df.to_csv(os.path.join(out_dir, "snr_raw_modes_plot_data.csv"),
@@ -515,11 +562,16 @@ def main():
     mdf_df.to_csv(os.path.join(out_dir, "mdf_raw_modes_plot_data.csv"),
                   index=False)
     # FFT plot data: the plotted, binned spectrum (fs/nfft ~ 0.12 Hz grid -
-    # identical to what the figure shows, ~4100 rows per mode)
+    # identical to what the figure shows, ~4100 rows per mode), plus the
+    # raw concatenated sample count and equivalent channel-data duration.
     fft_rows = []
-    for g, f, mag, mdf in zip(groups, freqs, mags, mdfs):
+    for g, f, mag, mdf, n_samples in zip(
+            groups, freqs, mags, mdfs, fft_sample_counts):
         fft_rows.append(pd.DataFrame({"mode": g["label"], "f_hz": f,
-                                      "magnitude_uV": mag, "mdf_hz": mdf}))
+                                      "magnitude_uV": mag, "mdf_hz": mdf,
+                                      "n_samples": n_samples,
+                                      "pooled_channel_data_duration_s":
+                                          n_samples / fs_global}))
     fft_df = pd.concat(fft_rows, ignore_index=True)
     fft_df.to_csv(os.path.join(out_dir, "fft_raw_modes_plot_data.csv"),
                   index=False)

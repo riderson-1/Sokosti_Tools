@@ -7,9 +7,8 @@ Usage:
 Produces, by default in <script_dir>/output/:
 
   samples_overview_<logstem>.png
-      One figure with 4 panels in the same window (the former plot_cpu_sample.py
-      layout): EMG sample rate, EMG per-interval drops, cumulative sample offset
-      and per-thread CPU load (stacked, from cycle deltas).
+      One figure with 3 panels in the same window: EMG sample rate, EMG per-interval
+      drops, and per-thread CPU load (stacked, from cycle deltas).
 
   samples_overview_<logstem>.log
       Everything the script prints: the exact command line, the gap statistics
@@ -174,7 +173,7 @@ def plot_overview(emg, imu, cpu, png_path):
     gap_e = dte > 1.6
     print("EMG intervals with a missing report line:", int(gap_e.sum()))
 
-    fig, ax = plt.subplots(4, 1, figsize=(11, 11), sharex=True)
+    fig, ax = plt.subplots(3, 1, figsize=(11, 9), sharex=True)
     ax[0].plot(te, re_, lw=.8, label="EMG")
     ax[0].axhline(nom, ls="--", c="gray", lw=.8, label=f"median {nom:.0f} Hz")
     ax[0].set_ylabel("EMG samples/s\n(normalised by real dt)")
@@ -183,8 +182,6 @@ def plot_overview(emg, imu, cpu, png_path):
     ax[1].bar(te, sde, width=1, bottom=lqe, label="SD queue drops")
     ax[1].set_ylabel("EMG samples dropped\nper interval")
     ax[1].legend()
-    ax[2].plot(te, np.cumsum(np.where(gap_e, nom * dte, emg[1:, 1])) - nom * te, lw=.8)
-    ax[2].set_ylabel("cumulative samples\nminus median-rate x t")
 
     # CPU load per thread, stacked to 100 %. The analyzer's own "CPU: x %" is a
     # running average since boot, so use deltas of the cumulative cycle counters.
@@ -214,11 +211,11 @@ def plot_overview(emg, imu, cpu, png_path):
     if has_idle:
         lab.append("idle")
         col.append("#eeeeee")
-    ax[3].stackplot(tc, S, labels=lab, colors=col)
-    ax[3].set_ylim(0, 100)
-    ax[3].set_ylabel("share of thread CPU time [%]\n(cycle deltas, ISR not incl.)")
-    ax[3].set_xlabel("time since boot [s]")
-    ax[3].legend(loc="upper center", bbox_to_anchor=(0.5, -0.28), ncol=4, fontsize=8)
+    ax[2].stackplot(tc, S, labels=lab, colors=col)
+    ax[2].set_ylim(0, 100)
+    ax[2].set_ylabel("share of thread CPU time [%]\n(cycle deltas, ISR not incl.)")
+    ax[2].set_xlabel("time since boot [s]")
+    ax[2].legend(loc="upper center", bbox_to_anchor=(0.5, -0.28), ncol=4, fontsize=8)
     print("CPU blocks used/dropped:", len(blk), len(cpu) - len(blk))
 
     for a in ax:

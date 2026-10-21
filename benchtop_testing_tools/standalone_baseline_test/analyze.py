@@ -18,7 +18,6 @@ import warnings
 import numpy as np
 import pandas as pd
 from scipy import signal as sp_signal
-from scipy.integrate import trapezoid
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
@@ -112,10 +111,10 @@ def compute_baseline_noise(df_seg, fs):
     """Per-channel noise metrics from the gap-free baseline segment.
 
     Returns a dict per channel with:
-      - mean_uV, rms_uV, vpp_uV over the whole gap-free section,
-      - rms_bands_uV: band-limited RMS (Welch PSD, scaling='density',
-        variance from trapezoid integration),
-      - welch_freqs_hz / welch_density_nv: PSD in nV/sqrt(Hz).
+      - mean_uV, rms_uV, vpp_uV over the whole gap-free section
+        (rms_uV covers the whole spectrum, 0 to Nyquist),
+      - welch_freqs_hz / welch_psd_uv2: PSD in uV^2/Hz
+        (Welch, scaling='density', psd already in uV^2/Hz).
     """
     noise = {}
     for ch in range(1, N_CHANNELS + 1):
@@ -126,23 +125,12 @@ def compute_baseline_noise(df_seg, fs):
                                          nperseg=nperseg, noverlap=nperseg // 2,
                                          scaling="density")
 
-        rms_bands = {}
-        for band_name, (f_low, f_high) in {"0.5-100Hz": (0.5, 100),
-                                           "20-450Hz": (20, 450)}.items():
-            mask = (freqs_psd >= f_low) & (freqs_psd <= f_high)
-            if mask.sum() > 0:
-                variance = trapezoid(psd[mask], freqs_psd[mask])
-                rms_bands[band_name] = float(np.sqrt(variance))
-            else:
-                rms_bands[band_name] = np.nan
-
         noise[ch] = {
             "mean_uV": float(np.mean(ch_uV)),
             "rms_uV": float(np.sqrt(np.mean(ch_uV ** 2))),
             "vpp_uV": float(np.ptp(ch_uV)),
-            "rms_bands_uV": rms_bands,
             "welch_freqs_hz": freqs_psd,
-            "welch_density_nv": np.sqrt(psd) * 1e9,
+            "welch_psd_uv2": psd,
         }
     return noise
 
@@ -186,20 +174,16 @@ def main():
     mean_uV = np.array([noise[c]["mean_uV"] for c in noise])
     rms_uV = np.array([noise[c]["rms_uV"] for c in noise])
     vpp_uV = np.array([noise[c]["vpp_uV"] for c in noise])
-    rms_05_100 = np.array([noise[c]["rms_bands_uV"]["0.5-100Hz"] for c in noise])
-    rms_20_450 = np.array([noise[c]["rms_bands_uV"]["20-450Hz"] for c in noise])
     welch_freqs = [noise[c]["welch_freqs_hz"] for c in noise]
-    welch_density = [noise[c]["welch_density_nv"] for c in noise]
+    welch_psd = [noise[c]["welch_psd_uv2"] for c in noise]
 
     np.savez(INTERIM_PATH,
              noise_ch=ch_arr,
              noise_mean_uV=mean_uV,
              noise_rms_uV=rms_uV,
              noise_vpp_uV=vpp_uV,
-             noise_rms_05_100=rms_05_100,
-             noise_rms_20_450=rms_20_450,
              noise_welch_freqs=welch_freqs,
-             noise_welch_density=welch_density,
+             noise_welch_psd_uv2=welch_psd,
              gap_info=gap_info,
              duration_s=duration,
              )
