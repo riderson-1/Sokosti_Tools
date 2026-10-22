@@ -15,19 +15,38 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-# Paths
-OUTPUT_DIR = "/home/karl/repos/Sokosti_tools/benchtop_testing_tools/known_signals_test/outputs"
+# Paths: output goes to an "output" subfolder next to this script (same
+# convention as analyze.py), regardless of the directory the script is run
+# from.
+OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
 INTERIM_PATH = os.path.join(OUTPUT_DIR, "interim_data.npz")
 FIGURE_DIR = os.path.join(OUTPUT_DIR, "figures")
 TABLE_DIR = os.path.join(OUTPUT_DIR, "tables")
-
 FS = 1000
 FIG1_CH = 1  # channel shown in the waveform figure
 N_PERIODS = 4  # plotted span per panel (within 3-5 periods)
 
+# ============================================================================
+# FONT SIZES (Figure 1 waveforms)
+# ============================================================================
+# Global rcParams defaults (used by all figures).
+FONT_GLOBAL = 9          # base font size
+FONT_GLOBAL_TICK = 8     # tick labels
+FONT_GLOBAL_LEGEND = 7.5 # legend entries
+
+# Figure 1 (waveform grid) overrides -- increase these to make fig 1 readable.
+FIG1_FONT_TITLE = 14     # panel titles ("10 Hz", ...)
+FIG1_FONT_YLABEL = 13    # "Amplitude (mV)" / "Residual (µV)"
+FIG1_FONT_XLABEL = 13    # "Time (ms)"
+FIG1_FONT_ROWLABEL = 13  # row labels ("1 G, 2 mVpp")
+FIG1_FONT_TICK = 11      # axis tick numbers
+FIG1_FONT_LEGEND = 11    # legend ("Recorded data", "Fitted sine")
+
 plt.rcParams.update({
-    "font.size": 9, "axes.labelsize": 9, "axes.titlesize": 9,
-    "xtick.labelsize": 8, "ytick.labelsize": 8, "legend.fontsize": 7.5,
+    "font.size": FONT_GLOBAL, "axes.labelsize": FONT_GLOBAL,
+    "axes.titlesize": FONT_GLOBAL,
+    "xtick.labelsize": FONT_GLOBAL_TICK, "ytick.labelsize": FONT_GLOBAL_TICK,
+    "legend.fontsize": FONT_GLOBAL_LEGEND,
     "figure.dpi": 150, "savefig.dpi": 300, "axes.linewidth": 0.8,
 })
 
@@ -44,9 +63,22 @@ def save_fig(fig, path):
 
 
 def load_interim():
-    """Load interim data from analyze.py."""
-    d = np.load(INTERIM_PATH)
-    return {k: d[k] for k in d.files}
+    """Load interim data from analyze.py.
+
+    Looks in the local output/ folder first, then falls back to the copy
+    saved next to the raw recordings (root folder of the test data).
+    """
+    candidates = [INTERIM_PATH,
+                  os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "interim_data.npz")]
+    for path in candidates:
+        if os.path.isfile(path):
+            d = np.load(path)
+            return {k: d[k] for k in d.files}
+    raise FileNotFoundError(
+        "interim_data.npz not found. Looked in:\n  "
+        + "\n  ".join(candidates)
+        + "\nRun analyze.py first (it saves a copy next to the raw data).")
 
 
 def find_condition(d, gain, amp, freq):
@@ -85,17 +117,19 @@ def plot_waveforms(d, output_path):
     freqs = sorted({int(f) for f in d["freqs_hz"]})
     n_rows, n_cols = len(combos), len(freqs)
 
-    fig = plt.figure(figsize=(3.3 * n_cols + 1.2, 2.5 * n_rows +  1.0))
-    outer = fig.add_gridspec(n_rows, n_cols, wspace=0.32, hspace=0.30)
+    fig = plt.figure(figsize=(3.3 * n_cols + 1.2, 2.5 * n_rows + 1.0))
+    outer = fig.add_gridspec(n_rows, n_cols, wspace=0.18, hspace=0.16)
     outer.update(bottom=0.05, top=0.96, left=0.10, right=0.99)
 
     for r, (gain, amp) in enumerate(combos):
         for c, freq in enumerate(freqs):
             cell = outer[r, c].subgridspec(
-                2, 1, height_ratios=[3, 1], hspace=0.14)
+                2, 1, height_ratios=[3, 2], hspace=0.08)
             ax = fig.add_subplot(cell[0])
             axr = fig.add_subplot(cell[1], sharex=ax)
-            ax.tick_params(labelbottom=False)
+            ax.tick_params(labelbottom=False,
+                           labelsize=FIG1_FONT_TICK)
+            axr.tick_params(labelsize=FIG1_FONT_TICK)
 
             idx = find_condition(d, gain, amp, freq)
             if idx is None:
@@ -133,8 +167,8 @@ def plot_waveforms(d, output_path):
             scale, unit = pick_unit(np.max(np.abs(raw)))
             rscale, runit = pick_unit(np.max(np.abs(resid)))
 
-            lbl_data = "Recorded data" if (r == 0 and c == 0) else None
-            lbl_fit = "Fitted sine" if (r == 0 and c == 0) else None
+            lbl_data = "Recorded data"
+            lbl_fit = "Fitted sine"
             # Fit first (background), recorded samples on top (foreground)
             ax.plot(u / fs_eff * 1e3, fit_dense * scale, lw=1.8, color="C3",
                     zorder=1.5, label=lbl_fit)
@@ -148,28 +182,28 @@ def plot_waveforms(d, output_path):
             axr.grid(True, ls=":", lw=0.5, alpha=0.6)
 
             if r == 0:
-                ax.set_title(f"{freq} Hz", fontsize=9.5)
+                ax.set_title(f"{freq} Hz", fontsize=FIG1_FONT_TITLE)
             if c == 0:
-                ax.set_ylabel(f"Amplitude ({unit})", fontsize=8.5)
-                axr.set_ylabel(f"Residual ({runit})", fontsize=8)
-                ax.text(-0.30, 0.5, f"{gain} G, {amp:g} mVpp",
+                ax.set_ylabel(f"Amplitude ({unit})", fontsize=FIG1_FONT_YLABEL)
+                ax.text(-0.36, 0.5, f"{gain} G, {amp:g} mVpp",
                         transform=ax.transAxes, rotation=90,
                         ha="center", va="center",
-                        fontsize=9, fontweight="bold")
-            if r ==  0:
-                # Headroom in the top row so the legend fits without colliding
-                lo, hi = ax.get_ylim()
-                ax.set_ylim(lo, hi + 0.4 * (hi - lo))
-                if c ==  0:
-                    ax.legend(loc="upper right", frameon=False, fontsize=7.5)
+                        fontsize=FIG1_FONT_ROWLABEL, fontweight="bold")
             if r == n_rows - 1:
-                axr.set_xlabel("Time (ms)", fontsize=8.5)
+                axr.set_xlabel("Time (ms)", fontsize=FIG1_FONT_XLABEL)
             else:
                 axr.tick_params(labelbottom=False)
-    # fig.text(0.5, 0.005,
-    #              "Slow baseline drift and DC offset removed from the displayed traces "
-    #          "for clarity; the analysis uses the raw data.",
-    #          ha="center", fontsize=7.5, color="0.4")
+
+    # Boxed legend centered at the bottom of the page
+    handles = [
+        plt.Line2D([], [], color="C0", lw=1.0, marker="o", ms=3.0,
+                   label="Recorded data"),
+        plt.Line2D([], [], color="C3", lw=1.8, label="Fitted sine"),
+        plt.Line2D([], [], color="0.25", lw=0.8, label="Residual"),
+    ]
+    fig.legend(handles=handles, loc="lower center", ncol=3,
+               frameon=True, edgecolor="0.6", fancybox=False,
+               fontsize=FIG1_FONT_LEGEND, bbox_to_anchor=(0.5, -0.01))
     save_fig(fig, output_path)
 
 

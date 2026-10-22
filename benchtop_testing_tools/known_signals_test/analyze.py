@@ -28,7 +28,7 @@ Baseline from the crosstalk test (breakout baseline) is not needed here:
 SINAD is computed from the fit residual of the driven signal itself.
 
 Usage:
-    python3 analyze.py
+    python3 analyze.py --root <data_folder> [--output <output_folder>]
 """
 
 # ============================================================================
@@ -42,6 +42,7 @@ Usage:
 # alone. ENOB is normalized to full scale per Analog Devices MT-003 Eq. 2.
 # ============================================================================
 
+import argparse
 import os
 import re
 import glob
@@ -52,8 +53,9 @@ import pandas as pd
 # CONFIGURATION CONSTANTS
 # ============================================================================
 
-ROOT_PATH = "/home/karl/Documents/Master_Thesis/Testing/benchtop_testing/known_signal_test"
-OUTPUT_DIR = "/home/karl/repos/Sokosti_tools/benchtop_testing_tools/known_signals_test/outputs"
+# Output goes to an "output" subfolder next to this script (same convention
+# as plot.py), regardless of the directory the script is run from.
+OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
 
 FS_NOMINAL = 1000        # nominal sample rate (folder labels, sample counting)
 FS_EXPECTED = 980.0      # true rate: ADC clock 2.000 MHz -> ~980 SPS
@@ -71,11 +73,6 @@ EXPECTED_FREQS_HZ = [10, 100, 250, 500]
 # Folder name encodes the condition; anything else (Pictures, .log files,
 # other folders) is ignored.
 FOLDER_RE = re.compile(r"^ALL_(\d+)G_Sine_([0-9.]+)mVpp_(\d+)Hz$")
-
-TABLE_DIR = os.path.join(OUTPUT_DIR, "tables")
-INTERIM_PATH = os.path.join(OUTPUT_DIR, "interim_data.npz")
-os.makedirs(TABLE_DIR, exist_ok=True)
-os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 
 # ============================================================================
@@ -288,13 +285,37 @@ def sine_metrics(y, a, b, dc, fit, nominal_vpp, gain):
 # ============================================================================
 
 def main():
+    parser = argparse.ArgumentParser(
+        description="Known-signal test analysis stage.")
+    parser.add_argument(
+        "--root", required=True, metavar="FOLDER",
+        help="folder containing the ALL_<gain>G_Sine_<amp>mVpp_<freq>Hz "
+             "condition folders")
+    parser.add_argument(
+        "--output", default=OUTPUT_DIR, metavar="FOLDER",
+        help="folder where tables and interim data are written "
+             "(default: %(default)s)")
+    args = parser.parse_args()
+
+    root_path = os.path.abspath(args.root)
+    output_dir = os.path.abspath(args.output)
+    if not os.path.isdir(root_path):
+        raise SystemExit(f"ERROR: root folder not found: {root_path}")
+
+    table_dir = os.path.join(output_dir, "tables")
+    interim_path = os.path.join(output_dir, "interim_data.npz")
+    os.makedirs(table_dir, exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
+
     print("=" * 70)
     print("Known-signal test: analysis stage")
     print("=" * 70)
+    print(f"  Root folder : {root_path}")
+    print(f"  Output dir  : {output_dir}")
 
     # --- Discover condition folders ---
-    folders = sorted(f for f in os.listdir(ROOT_PATH)
-                     if os.path.isdir(os.path.join(ROOT_PATH, f)))
+    folders = sorted(f for f in os.listdir(root_path)
+                         if os.path.isdir(os.path.join(root_path, f)))
     found = {}
     for name in folders:
         parsed = parse_folder(name)
@@ -320,7 +341,7 @@ def main():
         gain, amp, freq = key
         folder = found[key]
         try:
-            files = sorted(glob.glob(os.path.join(ROOT_PATH, folder, "*_PC.csv")))
+            files = sorted(glob.glob(os.path.join(root_path, folder, "*_PC.csv")))
             if not files:
                 raise FileNotFoundError("no *_PC.csv in folder")
             if len(files) > 1:
@@ -443,14 +464,34 @@ def main():
     # --- Save tables and interim data ---
     print("\n[3/3] Saving results...")
     results_df = pd.DataFrame(results)
-    results_df.to_csv(os.path.join(TABLE_DIR, "results.csv"), index=False)
+    results_df.to_csv(os.path.join(table_dir, "results.csv"), index=False)
     pd.DataFrame(per_channel).to_csv(
-        os.path.join(TABLE_DIR, "per_channel.csv"), index=False)
+        os.path.join(table_dir, "per_channel.csv"), index=False)
     pd.DataFrame(log_rows).to_csv(
-        os.path.join(TABLE_DIR, "file_log.csv"), index=False)
+        os.path.join(table_dir, "file_log.csv"), index=False)
 
     np.savez_compressed(
-        INTERIM_PATH,
+        interim_path,
+        gains=np.array([r[0] for r in interim]),
+        amps_mvpp=np.array([r[1] for r in interim]),
+        freqs_hz=np.array([r[2] for r in interim]),
+        channels=np.arange(1, N_CHANNELS + 1),
+        vpp_v=np.array([r[3] for r in interim]),
+        amp_err_pct=np.array([r[4] for r in interim]),
+        sinad_db=np.array([r[5] for r in interim]),
+        enob_bits=np.array([r[6] for r in interim]),
+        fs_eff_sps=np.array([r[9] for r in interim]),
+        fit_a=np.array([r[10] for r in interim]),
+        fit_b=np.array([r[11] for r in interim]),
+        fit_c=np.array([r[12] for r in interim]),
+        t_s=np.arange(N_WINDOW) / FS_NOMINAL,
+        data_v=np.array([r[7] for r in interim], dtype=np.float32),
+        fit_v=np.array([r[8] for r in interim], dtype=np.float32),
+    )
+    # Also keep a copy of the interim data next to the raw recordings so the
+    # plotting stage can be run from anywhere.
+    np.savez_compressed(
+        os.path.join(root_path, "interim_data.npz"),
         gains=np.array([r[0] for r in interim]),
         amps_mvpp=np.array([r[1] for r in interim]),
         freqs_hz=np.array([r[2] for r in interim]),
@@ -499,8 +540,9 @@ def main():
               f"{worst['amp_mvpp']:g}mVpp_{int(worst['freq_hz'])}Hz "
               f"({worst['sinad_mean_db']:.1f} dB)")
 
-    print(f"\nSaved results      : {os.path.join(TABLE_DIR, 'results.csv')}")
-    print(f"Saved interim data : {INTERIM_PATH}")
+    print(f"\nSaved results      : {os.path.join(table_dir, 'results.csv')}")
+    print(f"Saved interim data : {interim_path}")
+    print(f"                     {os.path.join(root_path, 'interim_data.npz')}")
     print("\nAnalysis stage complete. Run plot.py to generate figures and tables.")
 
 
