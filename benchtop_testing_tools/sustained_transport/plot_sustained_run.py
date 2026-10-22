@@ -221,7 +221,8 @@ def plot_overview(emg, imu, cpu, png_path):
     for a in ax:
         a.grid(alpha=.3)
     plt.tight_layout()
-    plt.savefig(png_path, dpi=130)
+    plt.savefig(png_path, dpi=130, bbox_inches="tight")
+    plt.savefig(os.path.splitext(png_path)[0] + ".pdf", bbox_inches="tight")
     plt.close(fig)
 
     print("EMG drops live/sd:", lqe.sum(), sde.sum(),
