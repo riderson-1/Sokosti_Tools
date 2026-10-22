@@ -42,6 +42,15 @@ FIG1_FONT_ROWLABEL = 13  # row labels ("1 G, 2 mVpp")
 FIG1_FONT_TICK = 11      # axis tick numbers
 FIG1_FONT_LEGEND = 11    # legend ("Recorded data", "Fitted sine")
 
+# Figure 2 (amplitude ratio) and Figure 3 (SINAD/ENOB) overrides.
+FIG23_FONT_TITLE = 14    # figure title ("Amplitude ratio", "SINAD / ENOB")
+FIG23_FONT_YLABEL = 13   # y-axis labels
+FIG23_FONT_XLABEL = 13   # "Frequency (Hz)"
+FIG23_FONT_TICK = 11     # axis tick numbers
+FIG23_FONT_LEGEND = 11   # legend entries ("1 G, 2 mVpp", ...)
+FIG23_LEGEND_HEIGHT = 22 # space reserved above the axes for the legend (pt)
+FIG23_TITLE_PAD = 60     # extra gap between title and legend/axes (pt)
+
 plt.rcParams.update({
     "font.size": FONT_GLOBAL, "axes.labelsize": FONT_GLOBAL,
     "axes.titlesize": FONT_GLOBAL,
@@ -237,11 +246,17 @@ def plot_amplitude_ratio(d, output_path):
     all_freqs = sorted(set(int(f) for f in d["freqs_hz"]))
     ax.set_xticks(all_freqs)
     ax.set_xticklabels([str(f) for f in all_freqs])
-    ax.set_xlabel("Frequency (Hz)")
-    ax.set_ylabel("Amplitude ratio (measured / nominal)")
+    ax.set_xlabel("Frequency (Hz)", fontsize=FIG23_FONT_XLABEL)
+    ax.set_ylabel("Amplitude ratio (measured / nominal)",
+                  fontsize=FIG23_FONT_YLABEL)
+    ax.set_title("Amplitude ratio vs. frequency",
+                 fontsize=FIG23_FONT_TITLE, pad=FIG23_TITLE_PAD)
+    ax.tick_params(labelsize=FIG23_FONT_TICK)
     ax.grid(True, which="major", ls=":", lw=0.6, alpha=0.7)
-    ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1), borderaxespad=0,
-              frameon=False)
+    ax.legend(loc="lower left", bbox_to_anchor=(0, 1.02), ncol=3,
+              frameon=False, fontsize=FIG23_FONT_LEGEND,
+              columnspacing=1.2, handlelength=1.6,
+              borderaxespad=0)
 
     save_fig(fig, output_path)
 
@@ -281,8 +296,11 @@ def plot_sinad(d, output_path):
     all_freqs = sorted(set(int(f) for f in d["freqs_hz"]))
     ax.set_xticks(all_freqs)
     ax.set_xticklabels([str(f) for f in all_freqs])
-    ax.set_xlabel("Frequency (Hz)")
-    ax.set_ylabel("SINAD (dB)")
+    ax.set_xlabel("Frequency (Hz)", fontsize=FIG23_FONT_XLABEL)
+    ax.set_ylabel("SINAD (dB)", fontsize=FIG23_FONT_YLABEL)
+    ax.set_title("SINAD / ENOB vs. frequency",
+                 fontsize=FIG23_FONT_TITLE, pad=FIG23_TITLE_PAD)
+    ax.tick_params(labelsize=FIG23_FONT_TICK)
     ax.grid(True, which="major", ls=":", lw=0.6, alpha=0.7)
 
     # Right axis: ENOB is an affine map of SINAD -> rescale the limits
@@ -290,10 +308,13 @@ def plot_sinad(d, output_path):
     lo, hi = ax.get_ylim()
     ax2 = ax.twinx()
     ax2.set_ylim((lo - 1.76) / 6.02, (hi - 1.76) / 6.02)
-    ax2.set_ylabel("ENOB (bits)")
+    ax2.set_ylabel("ENOB (bits)", fontsize=FIG23_FONT_YLABEL)
+    ax2.tick_params(labelsize=FIG23_FONT_TICK)
 
-    ax.legend(loc="upper left", bbox_to_anchor=(1.1,  1), borderaxespad=0,
-              frameon=False)
+    ax.legend(loc="lower left", bbox_to_anchor=(0, 1.02), ncol=3,
+              frameon=False, fontsize=FIG23_FONT_LEGEND,
+              columnspacing=1.2, handlelength=1.6,
+              borderaxespad=0)
     save_fig(fig, output_path)
 
 
