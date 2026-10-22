@@ -7,8 +7,13 @@ Usage:
 Produces, by default in <script_dir>/output/:
 
   samples_overview_<logstem>.png
-      One figure with 3 panels in the same window: EMG sample rate, EMG per-interval
-      drops, and per-thread CPU load (stacked, from cycle deltas).
+      One figure with 5 panels in the same window: EMG sample rate, EMG per-interval
+      drops, IMU sample rate, IMU per-interval drops, and per-thread CPU load
+      (stacked, from cycle deltas). The IMU panels are skipped when the log has
+      no IMU/s report lines.
+
+  samples_overview_<logstem>.pdf
+      The same figure in vector (PDF) form.
 
   samples_overview_<logstem>.log
       Everything the script prints: the exact command line, the gap statistics
@@ -173,15 +178,33 @@ def plot_overview(emg, imu, cpu, png_path):
     gap_e = dte > 1.6
     print("EMG intervals with a missing report line:", int(gap_e.sum()))
 
-    fig, ax = plt.subplots(3, 1, figsize=(11, 9), sharex=True)
+    has_imu = ti is not None
+    fig, ax = plt.subplots(5 if has_imu else 3, 1,
+                           figsize=(11, 13 if has_imu else 9), sharex=True)
     ax[0].plot(te, re_, lw=.8, label="EMG")
     ax[0].axhline(nom, ls="--", c="gray", lw=.8, label=f"median {nom:.0f} Hz")
     ax[0].set_ylabel("EMG samples/s\n(normalised by real dt)")
     ax[0].legend(loc="lower right")
     ax[1].bar(te, lqe, width=1, label="live queue drops")
     ax[1].bar(te, sde, width=1, bottom=lqe, label="SD queue drops")
-    ax[1].set_ylabel("EMG samples dropped\nper interval")
+    ax[1].set_ylabel("EMG samples dropped\nper second")
     ax[1].legend()
+
+    # IMU panels, same style as the EMG ones. Skipped when the log contains no
+    # IMU/s report lines.
+    if has_imu:
+        nom_i = np.nanmedian(ri)
+        ax[2].plot(ti, ri, lw=.8, color="tab:green", label="IMU")
+        ax[2].axhline(nom_i, ls="--", c="gray", lw=.8, label=f"median {nom_i:.0f} Hz")
+        ax[2].set_ylabel("IMU samples/s\n(normalised by real dt)")
+        ax[2].legend(loc="lower right")
+        ax[3].bar(ti, lqi, width=1, color="tab:green", label="live queue drops")
+        ax[3].bar(ti, sdi, width=1, bottom=lqi, color="tab:red", label="SD queue drops")
+        ax[3].set_ylabel("IMU samples dropped\nper second")
+        ax[3].legend()
+        print("IMU intervals with a missing report line:", int((dti > 1.6).sum()))
+    else:
+        print("No IMU/s report lines found - IMU panels skipped.")
 
     # CPU load per thread, stacked to 100 %. The analyzer's own "CPU: x %" is a
     # running average since boot, so use deltas of the cumulative cycle counters.
@@ -211,15 +234,18 @@ def plot_overview(emg, imu, cpu, png_path):
     if has_idle:
         lab.append("idle")
         col.append("#eeeeee")
-    ax[2].stackplot(tc, S, labels=lab, colors=col)
-    ax[2].set_ylim(0, 100)
-    ax[2].set_ylabel("share of thread CPU time [%]\n(cycle deltas, ISR not incl.)")
-    ax[2].set_xlabel("time since boot [s]")
-    ax[2].legend(loc="upper center", bbox_to_anchor=(0.5, -0.28), ncol=4, fontsize=8)
+    ax[-1].stackplot(tc, S, labels=lab, colors=col)
+    ax[-1].set_ylim(0, 100)
+    ax[-1].set_ylabel("share of thread CPU time [%]\n(cycle deltas, ISR not incl.)")
+    ax[-1].set_xlabel("time since boot [s]")
+    ax[-1].legend(loc="upper center", bbox_to_anchor=(0.5, -0.28), ncol=4, fontsize=8)
     print("CPU blocks used/dropped:", len(blk), len(cpu) - len(blk))
 
     for a in ax:
         a.grid(alpha=.3)
+    # All panels share the x axis; start it at 0 so it does not extend into
+    # negative time (matplotlib's default margin would otherwise do so).
+    ax[0].set_xlim(0, None)
     plt.tight_layout()
     plt.savefig(png_path, dpi=130, bbox_inches="tight")
     plt.savefig(os.path.splitext(png_path)[0] + ".pdf", bbox_inches="tight")
@@ -228,6 +254,8 @@ def plot_overview(emg, imu, cpu, png_path):
     print("EMG drops live/sd:", lqe.sum(), sde.sum(),
           "| IMU:", lqi.sum() if lqi is not None else "-", sdi.sum() if sdi is not None else "-")
     print("intervals with any EMG drop:", int(((lqe + sde) > 0).sum()), "of", len(te))
+    if lqi is not None:
+        print("intervals with any IMU drop:", int(((lqi + sdi) > 0).sum()), "of", len(ti))
     print("Threads plotted:", ", ".join(lab))
 
 
@@ -284,7 +312,8 @@ def main():
         emg, imu, cpu = parse_log(args.log)
         plot_overview(emg, imu, cpu, png_path)
         print()
-        print("## Outputs")
+        print("## Outfigure (PDF):", os.path.splitext(png_path)[0] + ".pdf")
+        print("Saved puts")
         print("Saved figure:", png_path)
         print("Saved log:", log_path)
     finally:
