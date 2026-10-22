@@ -33,6 +33,25 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+# ---------------------------------------------------------------------------
+# Font sizes (pt) used across all panels. Increase these to make the whole
+# figure more readable; every text element reads from them.
+# ---------------------------------------------------------------------------
+FONT_SIZE_TITLE = 16   # per-panel titles
+FONT_SIZE_LABEL = 14   # axis labels (x/y)
+FONT_SIZE_LEGEND = 12  # legend text
+FONT_SIZE_TICK = 12    # tick labels
+
+# Make every text element in the figure derive from the variables above.
+plt.rcParams.update({
+    "font.size": FONT_SIZE_TICK,
+    "axes.titlesize": FONT_SIZE_TITLE,
+    "axes.labelsize": FONT_SIZE_LABEL,
+    "legend.fontsize": FONT_SIZE_LEGEND,
+    "xtick.labelsize": FONT_SIZE_TICK,
+    "ytick.labelsize": FONT_SIZE_TICK,
+})
+
 # Map raw thread names (thread struct addresses in the log) to legend labels.
 THREAD_LABELS = {
     "0x200025c0": "SD thread",
@@ -183,11 +202,13 @@ def plot_overview(emg, imu, cpu, png_path):
                            figsize=(11, 13 if has_imu else 9), sharex=True)
     ax[0].plot(te, re_, lw=.8, label="EMG")
     ax[0].axhline(nom, ls="--", c="gray", lw=.8, label=f"median {nom:.0f} Hz")
-    ax[0].set_ylabel("EMG samples/s\n(normalised by real dt)")
+    ax[0].set_title("EMG sampling rate")
+    ax[0].set_ylabel("EMG samples\nper second")
     ax[0].legend(loc="lower right")
     ax[1].bar(te, lqe, width=1, label="live queue drops")
     ax[1].bar(te, sde, width=1, bottom=lqe, label="SD queue drops")
-    ax[1].set_ylabel("EMG samples dropped\nper second")
+    ax[1].set_title("EMG dropped samples")
+    ax[1].set_ylabel("EMG samples\nper second")
     ax[1].legend()
 
     # IMU panels, same style as the EMG ones. Skipped when the log contains no
@@ -196,11 +217,13 @@ def plot_overview(emg, imu, cpu, png_path):
         nom_i = np.nanmedian(ri)
         ax[2].plot(ti, ri, lw=.8, color="tab:green", label="IMU")
         ax[2].axhline(nom_i, ls="--", c="gray", lw=.8, label=f"median {nom_i:.0f} Hz")
-        ax[2].set_ylabel("IMU samples/s\n(normalised by real dt)")
+        ax[2].set_title("IMU sampling rate")
+        ax[2].set_ylabel("IMU samples\nper second")
         ax[2].legend(loc="lower right")
         ax[3].bar(ti, lqi, width=1, color="tab:green", label="live queue drops")
         ax[3].bar(ti, sdi, width=1, bottom=lqi, color="tab:red", label="SD queue drops")
-        ax[3].set_ylabel("IMU samples dropped\nper second")
+        ax[3].set_title("IMU lost samples")
+        ax[3].set_ylabel("IMU samples\nper second")
         ax[3].legend()
         print("IMU intervals with a missing report line:", int((dti > 1.6).sum()))
     else:
@@ -235,10 +258,12 @@ def plot_overview(emg, imu, cpu, png_path):
         lab.append("idle")
         col.append("#eeeeee")
     ax[-1].stackplot(tc, S, labels=lab, colors=col)
+    ax[-1].set_title("CPU load per thread")
     ax[-1].set_ylim(0, 100)
-    ax[-1].set_ylabel("share of thread CPU time [%]\n(cycle deltas, ISR not incl.)")
-    ax[-1].set_xlabel("time since boot [s]")
-    ax[-1].legend(loc="upper center", bbox_to_anchor=(0.5, -0.28), ncol=4, fontsize=8)
+    ax[-1].set_ylabel("share of thread CPU time\nin %")
+    ax[-1].set_xlabel("time since boot in s")
+    ax[-1].legend(loc="upper center", bbox_to_anchor=(0.5, -0.28), ncol=4,
+                  fontsize=FONT_SIZE_LEGEND)
     print("CPU blocks used/dropped:", len(blk), len(cpu) - len(blk))
 
     for a in ax:
