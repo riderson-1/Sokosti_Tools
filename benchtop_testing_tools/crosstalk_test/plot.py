@@ -22,7 +22,7 @@ FIGURE_DIR = os.path.join(OUTPUT_DIR, "figures")
 TABLE_DIR = os.path.join(OUTPUT_DIR, "tables")
 
 # Constants
-FS = 1000
+FS = 980  # effective ADS1299 sample rate (measured, not the nominal 1000)
 N_CHANNELS = 16
 # Shared with standalone_baseline_test/plot.py so both baseline PSD figures
 # use the same y-axis (scale and limits) and are directly comparable.

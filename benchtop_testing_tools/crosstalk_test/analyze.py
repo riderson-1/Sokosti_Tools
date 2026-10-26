@@ -30,7 +30,7 @@ BASELINE_PATH = "/home/karl/Documents/Master_Thesis/Testing/benchtop_testing/bre
 CROSSTALK_PATH = "/home/karl/Documents/Master_Thesis/Testing/benchtop_testing/crosstalk_test"
 OUTPUT_DIR = "/home/karl/repos/Sokosti_tools/benchtop_testing_tools/crosstalk_test/outputs"
 
-FS = 1000
+FS = 980  # effective ADS1299 sample rate (2.000 MHz clock instead of 2.048 MHz -> ~980 SPS, measured)
 GAIN = 1
 VREF = 4.5
 N_CHANNELS = 16
@@ -140,8 +140,25 @@ def amplitude_ls_sine_fit(t, y, fs, f0, f_bound_hz=2.0):
             return np.full_like(y, 1e12)
         return y - (A * np.sin(2 * np.pi * f * t + phi) + C)
 
-    A0 = np.std(y) * np.sqrt(2)
-    p0 = [A0, f0, 0.0, np.mean(y)]
+    # Initialization: at fixed frequency the model is linear in (a, b, C), so a coarse
+    # frequency grid with closed-form 3x3 least-squares solves finds the right basin
+    # (amplitude, phase AND frequency) without any nonlinear iteration. The 4-parameter
+    # fit then polishes from that start in a few iterations. This avoids the phase
+    # local-minimum trap that a naive phi0=0 start hits.
+    n_grid = 81
+    f_grid = np.linspace(f0 - f_bound_hz, f0 + f_bound_hz, n_grid)
+    best_cost, best_p = np.inf, None
+    for fg in f_grid:
+        X = np.column_stack([np.sin(2 * np.pi * fg * t), np.cos(2 * np.pi * fg * t), np.ones_like(t)])
+        coef, *_ = np.linalg.lstsq(X, y, rcond=None)
+        r = y - X @ coef
+        cost = float(r @ r)
+        if cost < best_cost:
+            best_cost, best_p = cost, (coef[0], coef[1], fg)
+    a, b, f_init = best_p
+    A0 = np.hypot(a, b)
+    phi0 = np.arctan2(b, a)  # y ~ A*sin(2*pi*f*t + phi) with a = A*cos(phi), b = A*sin(phi)
+    p0 = [A0, f_init, np.clip(phi0, -np.pi, np.pi), np.mean(y)]
     bounds = ([0, f0 - f_bound_hz, -np.pi, -np.inf],
               [np.inf, f0 + f_bound_hz, np.pi, np.inf])
     try:
