@@ -22,7 +22,7 @@ OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
 INTERIM_PATH = os.path.join(OUTPUT_DIR, "interim_data.npz")
 FIGURE_DIR = os.path.join(OUTPUT_DIR, "figures")
 TABLE_DIR = os.path.join(OUTPUT_DIR, "tables")
-FS = 1000
+FS = 980
 FIG1_CH = 1  # channel shown in the waveform figure
 N_PERIODS = 4  # plotted span per panel (within 3-5 periods)
 
@@ -117,8 +117,9 @@ def plot_waveforms(d, output_path):
 
     The fitted sine is evaluated analytically on a dense grid (smooth curve,
     drawn in the background); the recorded samples are drawn on top.
-    The x-axis uses the measured sample rate (fs_eff), so the period shown
-    is the true one (~980 SPS, not the nominal 1000).
+    The x-axis uses the fixed sample rate (fs_eff), and the fit is drawn at
+    the FITTED tone frequency (4-param IEEE 1057 fit), so the fitted sine
+    follows the recorded tone exactly.
     """
     gains = sorted({int(g) for g in d["gains"]})
     amps = sorted({float(a) for a in d["amps_mvpp"]})
@@ -126,9 +127,9 @@ def plot_waveforms(d, output_path):
     freqs = sorted({int(f) for f in d["freqs_hz"]})
     n_rows, n_cols = len(combos), len(freqs)
 
-    fig = plt.figure(figsize=(3.3 * n_cols + 1.2, 2.5 * n_rows + 1.0))
-    outer = fig.add_gridspec(n_rows, n_cols, wspace=0.18, hspace=0.16)
-    outer.update(bottom=0.05, top=0.96, left=0.10, right=0.99)
+    fig = plt.figure(figsize=(3.3 * n_cols + 2.2, 3.1 * n_rows + 1.0))
+    outer = fig.add_gridspec(n_rows, n_cols, wspace=0.30, hspace=0.16)
+    outer.update(bottom=0.05, top=0.96, left=0.16, right=0.99)
 
     for r, (gain, amp) in enumerate(combos):
         for c, freq in enumerate(freqs):
@@ -155,7 +156,7 @@ def plot_waveforms(d, output_path):
             c0 = float(d["fit_c"][idx, FIG1_CH - 1])
             resid_full = raw_full - d["fit_v"][idx, FIG1_CH - 1]
 
-            # Span of N_PERIODS at the measured rate
+            # Span of N_PERIODS at the fixed rate
             n_per = fs_eff / freq
             n_show = min(int(round(N_PERIODS * n_per)), len(raw_full))
             x_ms = np.arange(n_show) / fs_eff * 1e3
@@ -168,13 +169,16 @@ def plot_waveforms(d, output_path):
             raw = raw_full[:n_show] - trend
             resid = resid_full[:n_show] - trend
 
-            # Smooth analytical fit on a dense grid (background)
+            # Smooth analytical fit on a dense grid (background), at the
+            # FITTED tone frequency (4-param fit), not the nominal one
+            f_fit = float(d["freq_fit_hz"][idx, FIG1_CH - 1])
             u = np.linspace(0, n_show - 1, max(600, 8 * n_show))
-            w = 2.0 * np.pi * freq * u / fs_eff
+            w = 2.0 * np.pi * f_fit * u / fs_eff
             fit_dense = a * np.sin(w) + b * np.cos(w) + c0
 
+            # One shared unit per panel: chosen from the waveform amplitude,
+            # used by BOTH the waveform and the residual subplot.
             scale, unit = pick_unit(np.max(np.abs(raw)))
-            rscale, runit = pick_unit(np.max(np.abs(resid)))
 
             lbl_data = "Recorded data"
             lbl_fit = "Fitted sine"
@@ -186,15 +190,18 @@ def plot_waveforms(d, output_path):
                     marker=marker, ms=3.0, markevery=2,
                     zorder=2.5, label=lbl_data)
 
-            axr.plot(x_ms, resid * rscale, lw=0.8, color="0.25", zorder=2)
+            axr.plot(x_ms, resid * scale, lw=0.8, color="0.25", zorder=2)
             ax.grid(True, ls=":", lw=0.5, alpha=0.6)
             axr.grid(True, ls=":", lw=0.5, alpha=0.6)
 
             if r == 0:
                 ax.set_title(f"{freq} Hz", fontsize=FIG1_FONT_TITLE)
             if c == 0:
-                ax.set_ylabel(f"Amplitude ({unit})", fontsize=FIG1_FONT_YLABEL)
-                ax.text(-0.36, 0.5, f"{gain} G, {amp:g} mVpp",
+                ax.set_ylabel(f"Amplitude ({unit})",
+                              fontsize=FIG1_FONT_YLABEL, labelpad=10)
+                axr.set_ylabel(f"Residual ({unit})",
+                               fontsize=FIG1_FONT_YLABEL, labelpad=10)
+                ax.text(-0.5, 0, f"{gain} G, {amp:g} mVpp",
                         transform=ax.transAxes, rotation=90,
                         ha="center", va="center",
                         fontsize=FIG1_FONT_ROWLABEL, fontweight="bold")

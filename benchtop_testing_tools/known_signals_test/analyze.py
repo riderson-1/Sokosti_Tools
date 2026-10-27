@@ -11,13 +11,14 @@ MT-003 Eq. 2) per channel, aggregates over the
 channels, and saves tables plus interim data for plot.py.
 
 Sample rate: the ADS1299 is clocked with 2.000 MHz instead of the nominal
-2.048 MHz, so the true rate is ~980 SPS, not 1000. This is confirmed by the
-tone frequency (all tones appear at x1.0202 of nominal when read as 1000 SPS)
-and by the capture logs (EMG rate ~979 Hz). The effective rate is therefore
-estimated per file from the known tone and used as the fit time base; the fit
-itself stays at the KNOWN nominal frequency. The 500 Hz conditions are above
-Nyquist (~490 Hz) and appear aliased to ~480 Hz; the alias is handled in the
-rate estimation.
+2.048 MHz, so the true rate is ~980 SPS, not 1000. A FIXED rate of
+FS_EXPECTED = 979.65 SPS (median of the per-file tone-based estimates over
+all recordings) is used as the fit time base. Because the true rate varies
+slightly per recording session (979.2 .. 980.6 SPS), the tone frequency is
+FITTED with the IEEE 1057 4-parameter fit (frequency + amplitude + phase +
+DC) instead of assumed; the fitted frequency is reported as evidence of the
+clock deviation. The 500 Hz conditions are above Nyquist (~490 Hz) and
+appear aliased to ~480 Hz; the fit basis follows the alias.
 
 Amplitude roll-off with frequency (10 Hz ~99% of nominal, 100 Hz ~64%,
 250 Hz ~25%, 500 Hz ~4.5%) is caused by the RC low-pass filter on the PCB
@@ -34,12 +35,14 @@ Usage:
 # ============================================================================
 # METHODS NOTE
 # ============================================================================
-# The method follows the sine-fit approach of IEEE 1057 (3-parameter linear
-# least-squares fit at the known tone frequency) and the ADC characterization
-# conventions of IEEE 1241 (SINAD / ENOB definitions). SINAD therefore
-# includes the signal generator's own noise and distortion, i.e. it
-# characterizes the whole generator + input chain + ADC chain, not the ADC
-# alone. ENOB is normalized to full scale per Analog Devices MT-003 Eq. 2.
+# The method follows the sine-fit approach of IEEE 1057: a 4-parameter fit
+# (frequency, amplitude, phase, DC) per channel, implemented as a closed-form
+# 3-parameter linear least-squares solve at each candidate frequency with a
+# grid + golden-section search over frequency. SINAD / ENOB follow the IEEE
+# 1241 conventions. SINAD therefore includes the signal generator's own noise
+# and distortion, i.e. it characterizes the whole generator + input chain +
+# ADC chain, not the ADC alone. ENOB is normalized to full scale per Analog
+# Devices MT-003 Eq. 2.
 # ============================================================================
 
 import argparse
@@ -58,8 +61,10 @@ import pandas as pd
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
 
 FS_NOMINAL = 1000        # nominal sample rate (folder labels, sample counting)
-FS_EXPECTED = 980.0      # true rate: ADC clock 2.000 MHz -> ~980 SPS
-FS_TOL = [970.0, 990.0]  # plausible range used to validate the per-file estimate
+FS_EXPECTED = 980     # fixed rate used as the fit time base: ADC clock
+                         # 2.000 MHz instead of 2.048 MHz -> ~980 SPS; median
+                         # of the per-file tone-based estimates over all 24
+                         # recordings (979.2 .. 980.6 SPS, bimodal by session)
 VREF = 4.5               # ADC reference voltage [V]
 N_CHANNELS = 16          # recorded EMG channels (ch1..ch16)
 WINDOW_S = 3.0           # analysis window length [s, counted at nominal rate]
@@ -180,73 +185,19 @@ def counts_to_v(counts, gain):
 
 
 # ============================================================================
-# SAMPLE RATE ESTIMATION
-# ============================================================================
-
-def estimate_fs(y, f_nom):
-    """Effective sample rate, estimated from the known tone over a long record.
-
-    The tone appears at digital frequency d/FS_NOMINAL (d = spectral peak in
-    Hz read as 1000 SPS). Two interpretations are consistent with a peak:
-
-        non-aliased: fs = 1000 * f_nom / d          (f_nom < fs/2)
-        aliased:     fs = 1000 * f_nom / (1000 - d) (f_nom > fs/2)
-
-    The candidate closest to FS_EXPECTED wins (for 500 Hz, f_nom is above the
-    ~490 Hz Nyquist and only the aliased branch is physical). Returns
-    (fs, f_peak_displayed), or (None, d) if no plausible rate results.
-    Use the full recording: a 3 s window only gives 0.33 Hz bins, which is
-    too coarse to calibrate the rate at 10 Hz.
-    """
-    n = len(y)
-    seg = y - np.mean(y)
-    w = np.hanning(n)
-    S = np.abs(np.fft.rfft(seg * w))
-    fr = np.fft.rfftfreq(n, d=1.0 / FS_NOMINAL)
-
-    # Search window around the expected displayed tone (nominal x ~1.02, or
-    # aliased to ~1000*fs-f_nom for the above-Nyquist conditions)
-    lo, hi = 0.95 * f_nom, 1.10 * f_nom
-    if f_nom > 0.4 * FS_NOMINAL:
-        lo, hi = 0.90 * f_nom, 0.995 * FS_NOMINAL
-    band = (fr >= lo) & (fr <= hi)
-    if not np.any(band):
-        return None, None
-    idx = np.flatnonzero(band)
-    k = idx[np.argmax(S[idx])]
-    if k == 0 or k == len(S) - 1:
-        return None, None
-
-    # Sub-bin refinement (quadratic interpolation of log magnitude)
-    a, b, c = np.log(S[k - 1] + 1e-30), np.log(S[k] + 1e-30), np.log(S[k + 1] + 1e-30)
-    dk = 0.5 * (a - c) / (a - 2 * b + c)
-    d = fr[k] + dk * (fr[1] - fr[0])
-
-    fs_lin = FS_NOMINAL * f_nom / d
-    fs_ali = FS_NOMINAL * f_nom / (FS_NOMINAL - d)
-    # Pick the branch closest to the expected rate; accept only a plausible value
-    for cand in (fs_lin, fs_ali):
-        if FS_TOL[0] <= cand <= FS_TOL[1]:
-            return cand, d
-    return None, d
-
-
-# ============================================================================
 # SINE FIT AND METRICS
 # ============================================================================
 
 def fit_sine_3p(y, f0, fs):
-    """3-parameter linear least-squares fit (IEEE 1057) at the known f0,
+    """3-parameter linear least-squares fit (IEEE 1057) at frequency f0,
     with time base t = n/fs:
 
         y ~ a * sin(2*pi*f0*t) + b * cos(2*pi*f0*t) + c
 
     Returns (a, b, c, fitted_waveform).
-    Note: the frequency is NOT fitted. fs must be the effective sample rate
-    (~980 SPS) or the basis will not match the recorded tone; any remaining
-    deviation shows up in the residual and lowers SINAD. Above Nyquist the
-    basis matches the aliased image of the tone (sin/cos at f and fs-f span
-    the same subspace).
+    Note: the frequency is NOT fitted here. Above Nyquist the basis matches
+    the aliased image of the tone (sin/cos at f and fs-f span the same
+    subspace).
     """
     t = np.arange(len(y)) / fs
     w = 2.0 * np.pi * f0 * t
@@ -254,6 +205,66 @@ def fit_sine_3p(y, f0, fs):
     coef, *_ = np.linalg.lstsq(M, y, rcond=None)
     a, b, dc = coef
     return a, b, dc, M @ coef
+
+
+def fit_sine_4p(y, f_nom, fs):
+    """4-parameter sine fit (IEEE 1057): frequency is fitted too.
+
+    For a FIXED candidate frequency the problem is linear in (a, b, c)
+    (closed-form least squares, no iteration). The frequency is therefore
+    found by a coarse grid search around the nominal tone followed by
+    golden-section refinement of the residual sum of squares -- the standard
+    practical implementation of the IEEE 1057 4-parameter fit.
+
+    The time base stays the FIXED system rate fs (~979.65 SPS); the fitted
+    frequency is the tone's actual frequency in that base and is returned so
+    it can be reported (evidence of the clock deviation). Above Nyquist the
+    search runs over the aliased band, where sin/cos at f and fs-f span the
+    same subspace, so the fitted frequency is the alias.
+
+    Returns (a, b, c, f_fit, fitted_waveform).
+    """
+    n = len(y)
+    t = np.arange(n) / fs
+
+    def solve(f):
+        w = 2.0 * np.pi * f * t
+        M = np.column_stack([np.sin(w), np.cos(w), np.ones_like(t)])
+        coef, *_ = np.linalg.lstsq(M, y, rcond=None)
+        resid = y - M @ coef
+        return float(resid @ resid), coef
+
+    # Coarse grid: +/-2 Hz around the nominal tone (below Nyquist), or the
+    # aliased band just below fs/2 for above-Nyquist conditions.
+    if f_nom < fs / 2:
+        lo, hi = f_nom - 2.0, f_nom + 2.0
+    else:
+        lo, hi = 0.90 * f_nom, 0.499 * fs
+    grid = np.linspace(lo, hi, 401)
+    sse = np.array([solve(f)[0] for f in grid])
+    k = int(np.argmin(sse))
+
+    # Golden-section refinement around the best grid point
+    a_lo = grid[max(k - 1, 0)]
+    a_hi = grid[min(k + 1, len(grid) - 1)]
+    gr = (np.sqrt(5.0) - 1.0) / 2.0
+    x1, x2 = a_hi - gr * (a_hi - a_lo), a_lo + gr * (a_hi - a_lo)
+    f1, f2 = solve(x1)[0], solve(x2)[0]
+    for _ in range(60):
+        if f1 < f2:
+            a_hi, x2, f2 = x2, x1, f1
+            x1 = a_hi - gr * (a_hi - a_lo)
+            f1 = solve(x1)[0]
+        else:
+            a_lo, x1, f1 = x1, x2, f2
+            x2 = a_lo + gr * (a_hi - a_lo)
+            f2 = solve(x2)[0]
+    f_fit = 0.5 * (a_lo + a_hi)
+    _, coef = solve(f_fit)
+    a, b, dc = coef
+    w = 2.0 * np.pi * f_fit * t
+    M = np.column_stack([np.sin(w), np.cos(w), np.ones_like(t)])
+    return a, b, dc, f_fit, M @ coef
 
 
 def sine_metrics(y, a, b, dc, fit, nominal_vpp, gain):
@@ -372,17 +383,11 @@ def main():
                       f"alias. Droop near Nyquist (ADS1299 sinc filter) and the PCB "
                       f"input RC low-pass are expected, not bugs.")
 
-            # One sample rate per file (all channels share the clock),
-            # estimated from the tone in the FULL record of every channel.
-            fs_ests = []
-            for ch in range(1, N_CHANNELS + 1):
-                y_full = counts_to_v(df_full[f"ch{ch}"].to_numpy(dtype=float), gain)
-                fs_c, _ = estimate_fs(y_full, freq)
-                if fs_c is not None:
-                    fs_ests.append(fs_c)
-            if not fs_ests:
-                raise ValueError(f"cannot estimate sample rate from the {freq} Hz tone")
-            fs_eff = float(np.median(fs_ests))
+            # Fixed sample rate (all channels share the clock). No per-file
+            # estimation: the rate is a fixed system constant (ADC clock
+            # 2.000 MHz instead of 2.048 MHz -> ~980 SPS; median of the
+            # per-file tone-based estimates over all recordings).
+            fs_eff = FS_EXPECTED
 
             data_v = np.full((N_CHANNELS, N_WINDOW), np.nan)
             fit_v = np.full((N_CHANNELS, N_WINDOW), np.nan)
@@ -393,13 +398,14 @@ def main():
             coef_a = np.full(N_CHANNELS, np.nan)
             coef_b = np.full(N_CHANNELS, np.nan)
             coef_c = np.full(N_CHANNELS, np.nan)
+            ffit_ch = np.full(N_CHANNELS, np.nan)
             rows = []
 
             for ch in range(1, N_CHANNELS + 1):
                 y = counts_to_v(df_seg[f"ch{ch}"].to_numpy(dtype=float), gain)
                 data_v[ch - 1] = y
 
-                a, b, dc, fit = fit_sine_3p(y, freq, fs_eff)
+                a, b, dc, f_fit, fit = fit_sine_4p(y, freq, fs_eff)
                 vpp, err, sinad, enob = sine_metrics(y, a, b, dc, fit,
                                                      amp * 1e-3, gain)
 
@@ -411,10 +417,11 @@ def main():
                 coef_a[ch - 1] = a
                 coef_b[ch - 1] = b
                 coef_c[ch - 1] = dc
+                ffit_ch[ch - 1] = f_fit
 
                 rows.append({
                     "gain": gain, "amp_mvpp": amp, "freq_hz": freq,
-                    "channel": ch,
+                    "channel": ch, "freq_fit_hz": f_fit,
                     "vpp_v": vpp, "amp_err_pct": err,
                     "sinad_db": sinad, "enob_bits": enob,
                 })
@@ -423,6 +430,7 @@ def main():
             # Aggregate across the 16 channels (std: sample std, ddof=1)
             results.append({
                 "gain": gain, "amp_mvpp": amp, "freq_hz": freq,
+                "freq_fit_mean_hz": float(np.nanmean(ffit_ch)),
                 "vpp_mean_v": float(np.nanmean(vpp_ch)),
                 "vpp_std_v": float(np.nanstd(vpp_ch, ddof=1)),
                 "amp_err_mean_pct": float(np.nanmean(err_ch)),
@@ -437,15 +445,15 @@ def main():
             })
             interim.append((gain, amp, freq, vpp_ch, err_ch, sinad_ch,
                             enob_ch, data_v, fit_v, fs_eff,
-                            coef_a, coef_b, coef_c))
+                            coef_a, coef_b, coef_c, ffit_ch))
 
             log_rows.append({
                 "file": os.path.basename(files[0]), "gain": gain,
                 "amp_mvpp": amp, "freq_hz": freq,
+                "freq_fit_mean_hz": float(np.nanmean(ffit_ch)),
                 "n_samples_file": winfo["n_samples_full"],
                 "n_samples_window": N_WINDOW,
                 "fs_eff_sps": fs_eff,
-                "fs_channels_ok": len(fs_ests),
                 "n_gaps": winfo["n_gaps"],
                 "lost_samples": winfo["total_lost_samples"],
                 "window_start": winfo["window_start"],
@@ -484,6 +492,7 @@ def main():
         fit_a=np.array([r[10] for r in interim]),
         fit_b=np.array([r[11] for r in interim]),
         fit_c=np.array([r[12] for r in interim]),
+        freq_fit_hz=np.array([r[13] for r in interim]),
         t_s=np.arange(N_WINDOW) / FS_NOMINAL,
         data_v=np.array([r[7] for r in interim], dtype=np.float32),
         fit_v=np.array([r[8] for r in interim], dtype=np.float32),
@@ -504,6 +513,7 @@ def main():
         fit_a=np.array([r[10] for r in interim]),
         fit_b=np.array([r[11] for r in interim]),
         fit_c=np.array([r[12] for r in interim]),
+        freq_fit_hz=np.array([r[13] for r in interim]),
         t_s=np.arange(N_WINDOW) / FS_NOMINAL,
         data_v=np.array([r[7] for r in interim], dtype=np.float32),
         fit_v=np.array([r[8] for r in interim], dtype=np.float32),
@@ -527,9 +537,11 @@ def main():
         print(f"  Above Nyquist         : {', '.join(nyquist_warned)} "
               f"(aliased tone handled; PCB RC low-pass + sinc droop expected)")
     if n_ok > 0:
-        fs_vals = np.array([r[9] for r in interim])
-        print(f"  Est. sample rate      : {fs_vals.min():.1f} .. {fs_vals.max():.1f} SPS "
-              f"(expected ~{FS_EXPECTED:.0f}: ADC clock 2.000 MHz, not 2.048 MHz)")
+        print(f"  Sample rate           : fixed {FS_EXPECTED:.2f} SPS "
+              f"(ADC clock 2.000 MHz, not 2.048 MHz; no per-file estimation)")
+        ffit = results_df["freq_fit_mean_hz"]
+        print(f"  Fitted tone freq      : {ffit.min():.2f} .. {ffit.max():.2f} Hz "
+              f"vs nominal (4-param IEEE 1057 fit; clock-deviation evidence)")
         ok = results_df.dropna(subset=["sinad_mean_db"])
         best = ok.loc[ok["sinad_mean_db"].idxmax()]
         worst = ok.loc[ok["sinad_mean_db"].idxmin()]
