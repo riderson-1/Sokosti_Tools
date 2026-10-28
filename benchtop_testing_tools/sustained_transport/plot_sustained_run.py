@@ -2,7 +2,7 @@
 """Combined sustained-run analysis: sample loss, CPU load and CSV gap statistics.
 
 Usage:
-    python plot_sustained_run.py <full_logging.log> <capture.csv> [--fs 1000] [--out-dir DIR]
+    python plot_sustained_run.py <full_logging.log> <live_capture.csv> <sd_capture.csv> [--fs 980] [--fs-imu 100] [--out-dir DIR]
 
 Produces, by default in <script_dir>/output/:
 
@@ -15,10 +15,14 @@ Produces, by default in <script_dir>/output/:
   samples_overview_<logstem>.pdf
       The same figure in vector (PDF) form.
 
-  samples_overview_<logstem>.log
-      Everything the script prints: the exact command line, the gap statistics
-      (same tables as emg_isometric.py, computed from the sample-counter column
-      of the CSV), the sample-loss summary, the CPU summary and the output paths.
+  samples_overview_<logstem>.md
+      Everything the script prints, in Markdown: the exact command line, the
+      gap statistics for the live capture CSV (transport path) and the SD
+      capture CSV (SD-card path), each computed from the sample-counter column
+      like emg_isometric.py, the per-modality sample-loss statistics from the
+      log's queue-drop counters, the rough loss attribution (lost at queue vs
+      lost after the queue vs total, EMG exact and IMU estimated), the CPU
+      summary and the output paths.
 """
 
 import argparse
@@ -150,6 +154,8 @@ def print_gap_statistics(csv_path, fs):
     print(f"File: {csv_path}")
     print(f"Samples: {len(idx)} received, {n_missing} missing ({100.0 * n_missing / n_full:.2f}%)")
     print(f"Gaps: {len(gap_lengths)} total")
+    print("(the sample counter counts EMG samples; IMU values are held between updates,")
+    print(" so IMU loss cannot be derived from the CSV - see the log-based statistics)")
     if gap_lengths:
         gl = np.array(gap_lengths, dtype=float)
         print("\n### Gap statistics\n")
@@ -183,7 +189,139 @@ def rate(a):
     return a[1:, 0] - a[0, 0], dt, r, a[1:, 2], a[1:, 3]
 
 
-def plot_overview(emg, imu, cpu, png_path):
+def print_loss_statistics(a, fs, name):
+    """Full loss statistics for one modality as a markdown table.
+
+    Percentages are relative to collected + lost. Intervals whose report line
+    was garbled/missing (dt > 1.6 s) are excluded, because their drop counts
+    are unknown. Returns (t_interval_end, collected, live, sd) restricted to
+    usable intervals, for loss attribution and figure overlays.
+    """
+    dt = np.diff(a[:, 0])
+    ok = dt <= 1.6
+    n_used = int(ok.sum())
+    n_excl = int((~ok).sum())
+    if n_used == 0:
+        print(f"### {name} sample loss statistics\n")
+        print("No intervals with a usable report line - statistics skipped.")
+        return None
+    coll = a[1:, 1][ok].astype(float)
+    live = a[1:, 2][ok].astype(float)
+    sd = a[1:, 3][ok].astype(float)
+    n_coll = coll.sum()
+    print(f"### {name} sample loss statistics\n")
+    print(f"Intervals: {n_used} used, {n_excl} excluded (missing/garbled report line)")
+    print(f"Samples collected: {n_coll:.0f}")
+    print()
+    cols = [(f"{name} live", live), (f"{name} SD", sd)]
+    print("| Metric | " + " | ".join(c for c, _ in cols) + " |")
+    print("|--------|--------|--------|")
+    rows = [
+        ("Samples lost (total)",
+         lambda v: f"{v.sum():.0f} ({100.0 * v.sum() / (n_coll + v.sum()):.2f}% "
+                   "of collected + lost)"),
+        ("Mean per interval (samples)",
+         lambda v: f"{v.mean():.1f} +/- {v.std():.1f} (SD)"),
+        (f"Mean per interval (ms @{fs} Hz)",
+         lambda v: f"{v.mean() / fs * 1000:.1f} +/- {v.std() / fs * 1000:.1f} (SD)"),
+        ("Median per interval (samples)", lambda v: f"{np.median(v):.0f}"),
+        ("Min per interval (samples)", lambda v: f"{v.min():.0f}"),
+        ("Max per interval (samples)", lambda v: f"{v.max():.0f}"),
+        (f"Max per interval (ms @{fs} Hz)", lambda v: f"{v.max() / fs * 1000:.0f}"),
+        ("Intervals with drops",
+         lambda v: f"{int((v > 0).sum())} of {n_used} "
+                   f"({100.0 * (v > 0).sum() / n_used:.1f}%)"),
+    ]
+    for label, fn in rows:
+        print(f"| {label} | " + " | ".join(fn(v) for _, v in cols) + " |")
+    return a[1:, 0][ok], coll, live, sd
+
+
+def imu_after_queue_loss(csv_path, fs_emg, fs_imu):
+    """Rough estimate of IMU samples lost after the queues, from the CSV.
+
+    Assumption (stated as a disclaimer in the report): unchanged IMU values
+    are treated as received - the sensor may simply be stationary. Every row
+    carries the latest IMU sample, held for about fs_emg/fs_imu counter
+    units, so an IMU sample only counts as lost when a CSV gap spans its
+    entire validity window.
+    """
+    idx = pd.read_csv(csv_path, usecols=[0]).iloc[:, 0].values.astype(np.int64)
+    gaps = np.diff(idx)
+    gaps = gaps[gaps > 1] - 1
+    if gaps.size == 0:
+        return 0
+    period = fs_emg / fs_imu
+    return int(np.maximum(np.round(gaps / period) - 1, 0).sum())
+
+
+def print_loss_attribution(emg_stats, imu_stats, live_csv, sd_csv, fs, fs_imu):
+    """Rough end-to-end loss attribution per modality and path.
+
+    The log and the CSVs are not time-aligned, so queue vs after-queue is a
+    rough split by stage from overall totals. Percentages use the samples
+    that entered the path (log collected + that queue's drops), the same
+    collected + lost denominator as the loss-statistics tables, so the same
+    quantity never shows two different percentages. EMG numbers are exact;
+    the IMU after-queue loss is estimated (see imu_after_queue_loss). The
+    two stages are disjoint, so they sum to the total, up to 0.01 pp of
+    rounding.
+    """
+    te, coll, live, sd = emg_stats
+    live_q, sd_q = live.sum(), sd.sum()
+
+    live_idx = pd.read_csv(live_csv, usecols=[0]).iloc[:, 0].values.astype(np.int64)
+    sd_idx = pd.read_csv(sd_csv, usecols=[0]).iloc[:, 0].values.astype(np.int64)
+    live_miss = int(live_idx[-1] - live_idx[0] + 1 - np.unique(live_idx).size)
+    sd_miss = int(sd_idx[-1] - sd_idx[0] + 1 - np.unique(sd_idx).size)
+
+    print("## Loss attribution (rough)\n")
+    print("The log and the CSVs are not time-aligned, so queue vs after-queue is a")
+    print("rough split by stage from overall totals. Percentages are of the samples")
+    print("that entered the path (collected + queue drops), the same collected + lost")
+    print("denominator as the loss-statistics tables. Queue drops are exact log counts")
+    print("and the EMG after-queue loss is exact; the IMU after-queue loss is estimated")
+    print("assuming unchanged IMU values were received (the sensor may be stationary)")
+    print("- only samples whose entire validity window lies inside a CSV gap count as")
+    print("lost. Queue + after sum to the total, up to 0.01 pp of rounding; ~ marks")
+    print("estimated values.\n")
+    print("Lost after queue = card write (SD path) or BLE + PC capture (live path).\n")
+    print("| Path | Lost at queue (log) | Lost after queue | Total lost |")
+    print("|------|----------------------|------------------|------------|")
+    den = coll.sum() + sd_q  # samples that entered the SD path
+    after_sd = int(max(sd_miss - sd_q, 0))
+    print(f"| EMG -> SD card | {sd_q:.0f} ({100.0 * sd_q / den:.2f}%) "
+          f"| {after_sd} ({100.0 * after_sd / den:.2f}%) "
+          f"| {sd_miss} ({100.0 * sd_miss / den:.2f}%) |")
+    den = coll.sum() + live_q  # samples that entered the live path
+    after_live = int(max(live_miss - live_q, 0))
+    print(f"| EMG -> live (BLE/USB) | {live_q:.0f} ({100.0 * live_q / den:.2f}%) "
+          f"| {after_live} ({100.0 * after_live / den:.2f}%) "
+          f"| {live_miss} ({100.0 * live_miss / den:.2f}%) |")
+    print()
+    print("EMG -> live and EMG -> SD rows describe overlapping streams (each sample")
+    print("is offered to both paths), so their percentages are not expected to sum.")
+
+    if imu_stats is None:
+        return
+    ti, coll_i, live_i, sd_i = imu_stats
+    live_qi, sd_qi = live_i.sum(), sd_i.sum()
+    imu_after_live = imu_after_queue_loss(live_csv, fs, fs_imu)
+    imu_after_sd = imu_after_queue_loss(sd_csv, fs, fs_imu)
+    den = coll_i.sum() + sd_qi
+    print(f"| IMU -> SD card | {sd_qi:.0f} ({100.0 * sd_qi / den:.2f}%) "
+          f"| ~{imu_after_sd} ({100.0 * imu_after_sd / den:.2f}%) "
+          f"| ~{sd_qi + imu_after_sd:.0f} ({100.0 * (sd_qi + imu_after_sd) / den:.2f}%) |")
+    den = coll_i.sum() + live_qi
+    print(f"| IMU -> live (BLE/USB) | {live_qi:.0f} ({100.0 * live_qi / den:.2f}%) "
+          f"| ~{imu_after_live} ({100.0 * imu_after_live / den:.2f}%) "
+          f"| ~{live_qi + imu_after_live:.0f} ({100.0 * (live_qi + imu_after_live) / den:.2f}%) |")
+    print()
+    print("A lost IMU sample with unchanged values is indistinguishable from a")
+    print("stationary sensor, hence the ~ on the IMU after-queue and total columns.")
+
+
+def plot_overview(emg, imu, cpu, png_path, fs, fs_imu):
     emg = np.array(emg)
     imu = np.array(imu)
     if len(emg) < 2:
@@ -205,10 +343,10 @@ def plot_overview(emg, imu, cpu, png_path):
     ax[0].set_title("EMG sampling rate")
     ax[0].set_ylabel("EMG samples\nper second")
     ax[0].legend(loc="lower right")
-    ax[1].bar(te, lqe, width=1, label="live queue drops")
-    ax[1].bar(te, sde, width=1, bottom=lqe, label="SD queue drops")
-    ax[1].set_title("EMG dropped samples")
-    ax[1].set_ylabel("EMG samples\nper second")
+    ax[1].bar(te, lqe, width=1, color="tab:blue", label="EMG live queue drops")
+    ax[1].bar(te, sde, width=1, bottom=lqe, color="tab:red", label="EMG SD queue drops")
+    ax[1].set_title("EMG lost samples")
+    ax[1].set_ylabel("EMG samples lost\nper interval")
     ax[1].legend()
 
     # IMU panels, same style as the EMG ones. Skipped when the log contains no
@@ -220,10 +358,10 @@ def plot_overview(emg, imu, cpu, png_path):
         ax[2].set_title("IMU sampling rate")
         ax[2].set_ylabel("IMU samples\nper second")
         ax[2].legend(loc="lower right")
-        ax[3].bar(ti, lqi, width=1, color="tab:green", label="live queue drops")
-        ax[3].bar(ti, sdi, width=1, bottom=lqi, color="tab:red", label="SD queue drops")
+        ax[3].bar(ti, lqi, width=1, color="tab:green", label="IMU live queue drops")
+        ax[3].bar(ti, sdi, width=1, bottom=lqi, color="tab:orange", label="IMU SD queue drops")
         ax[3].set_title("IMU lost samples")
-        ax[3].set_ylabel("IMU samples\nper second")
+        ax[3].set_ylabel("IMU samples lost\nper interval")
         ax[3].legend()
         print("IMU intervals with a missing report line:", int((dti > 1.6).sum()))
     else:
@@ -276,11 +414,7 @@ def plot_overview(emg, imu, cpu, png_path):
     plt.savefig(os.path.splitext(png_path)[0] + ".pdf", bbox_inches="tight")
     plt.close(fig)
 
-    print("EMG drops live/sd:", lqe.sum(), sde.sum(),
-          "| IMU:", lqi.sum() if lqi is not None else "-", sdi.sum() if sdi is not None else "-")
-    print("intervals with any EMG drop:", int(((lqe + sde) > 0).sum()), "of", len(te))
-    if lqi is not None:
-        print("intervals with any IMU drop:", int(((lqi + sdi) > 0).sum()), "of", len(ti))
+    print()
     print("Threads plotted:", ", ".join(lab))
 
 
@@ -302,45 +436,65 @@ class _Tee:
 def main():
     ap = argparse.ArgumentParser(
         description="Sustained-run overview: sample loss + CPU load figure and "
-                    "CSV gap statistics, saved as PNG + log file.")
+                    "CSV gap statistics, saved as PNG + Markdown report.")
     ap.add_argument("log", help="Device full-logging output (EMG/s, IMU/s and Thread analyze lines)")
-    ap.add_argument("csv", help="Capture CSV; its first column (sample counter) is used for gap statistics")
-    ap.add_argument("--fs", type=int, default=1000,
-                    help="EMG sample rate in Hz, used for gap lengths in ms (default 1000)")
+    ap.add_argument("csv_live",
+                    help="Live capture CSV (BLE/USB recording); its first column "
+                         "(sample counter) is used for live-path gap statistics")
+    ap.add_argument("csv_sd",
+                    help="SD-card capture CSV; its first column (sample counter) "
+                         "is used for SD-path gap statistics")
+    ap.add_argument("--fs", type=int, default=980,
+                    help="EMG sample rate in Hz, used for gap lengths in ms (default 980)")
+    ap.add_argument("--fs-imu", type=int, default=100,
+                    help="IMU sample rate in Hz, used for IMU drop lengths in ms (default 100)")
     ap.add_argument("--out-dir",
                     default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "output"),
-                    help="Output directory for the PNG and the log file (default: output/ next to this script)")
+                    help="Output directory for the PNG and the Markdown report (default: output/ next to this script)")
     args = ap.parse_args()
 
-    for path, what in ((args.log, "log"), (args.csv, "CSV")):
+    for path, what in ((args.log, "log"), (args.csv_live, "live CSV"),
+                       (args.csv_sd, "SD CSV")):
         if not os.path.isfile(path):
             sys.exit(f"{what} file not found: {path}")
 
     os.makedirs(args.out_dir, exist_ok=True)
     stem = os.path.basename(args.log).rsplit(".", 1)[0]
     png_path = os.path.join(args.out_dir, f"samples_overview_{stem}.png")
-    log_path = os.path.join(args.out_dir, f"samples_overview_{stem}.log")
+    md_path = os.path.join(args.out_dir, f"samples_overview_{stem}.md")
 
-    log_f = open(log_path, "w", buffering=1)
+    log_f = open(md_path, "w", buffering=1)
     orig_stdout = sys.stdout
     sys.stdout = _Tee(orig_stdout, log_f)
     try:
         # record the exact command so the run can be repeated immediately:
         print("# Command: python " + " ".join(shlex.quote(a) for a in sys.argv))
         print(f"Log: {args.log}")
-        print(f"CSV: {args.csv}")
+        print(f"Live CSV: {args.csv_live}")
+        print(f"SD CSV: {args.csv_sd}")
         print()
-        print("## Gap statistics")
-        print_gap_statistics(args.csv, args.fs)
+        print("## Live CSV gap statistics (transport path)")
+        print_gap_statistics(args.csv_live, args.fs)
+        print()
+        print("## SD CSV gap statistics (SD-card path)")
+        print_gap_statistics(args.csv_sd, args.fs)
         print()
         print("## Sample loss and CPU load")
         emg, imu, cpu = parse_log(args.log)
-        plot_overview(emg, imu, cpu, png_path)
+        plot_overview(emg, imu, cpu, png_path, args.fs, args.fs_imu)
+        emg_stats = print_loss_statistics(np.array(emg), args.fs, "EMG")
+        imu_stats = None
+        if imu is not None and len(imu) >= 2:
+            print()
+            imu_stats = print_loss_statistics(np.array(imu), args.fs_imu, "IMU")
+        if emg_stats is not None:
+            print()
+            print_loss_attribution(emg_stats, imu_stats, args.csv_live,
+                                 args.csv_sd, args.fs, args.fs_imu)
         print()
         print("## Outfigure (PDF):", os.path.splitext(png_path)[0] + ".pdf")
-        print("Saved puts")
         print("Saved figure:", png_path)
-        print("Saved log:", log_path)
+        print("Saved report (Markdown):", md_path)
     finally:
         sys.stdout = orig_stdout
         log_f.close()

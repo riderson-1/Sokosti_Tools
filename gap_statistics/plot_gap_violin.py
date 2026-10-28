@@ -91,16 +91,19 @@ def main():
                     color="crimson", fontweight="bold")
 
     os.makedirs(args.out_dir, exist_ok=True)
-    out_path = os.path.join(args.out_dir, "gap_violin.png")
+    png_path = os.path.join(args.out_dir, "gap_violin.png")
+    pdf_path = os.path.join(args.out_dir, "gap_violin.pdf")
     fig.tight_layout()
-    fig.savefig(out_path, dpi=150)
+    fig.savefig(png_path, dpi=150)
+    fig.savefig(pdf_path)
     plt.close(fig)
 
     for g in GROUP_ORDER:
         vals = groups[g]
         print(f"{g}: n={len(vals)} mean={sum(vals)/len(vals):.2f}% "
               f"min={min(vals):.2f}% max={max(vals):.2f}%")
-    print(f"Saved: {out_path}")
+    print(f"Saved: {png_path}")
+    print(f"Saved: {pdf_path}")
 
 
 if __name__ == "__main__":
