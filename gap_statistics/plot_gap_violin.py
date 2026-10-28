@@ -42,17 +42,31 @@ def main():
     summary = read_summary_section(args.csv)
 
     groups = {g: [] for g in GROUP_ORDER}
+    # per-trial (samples_received, fs)
+    samples = {g: [] for g in GROUP_ORDER}
     for r in summary:
         pct = float(r["missing_pct"])
+        received = int(r["samples_received"])
+        fs = int(r["fs"]) if r["fs"] else 980
         if r["recording"] == "SD":
-            groups["SD card"].append(pct)
+            group = "SD card"
         elif r["config"].startswith("USB"):
-            groups["USB PC"].append(pct)
+            group = "USB PC"
         elif r["config"].startswith("BLE"):
-            groups["BLE PC"].append(pct)
+            group = "BLE PC"
         else:
             sys.exit(f"cannot classify trial: config={r['config']!r} "
                      f"recording={r['recording']!r}")
+        groups[group].append(pct)
+        samples[group].append((received, fs))
+
+    def tick_label(g):
+        total_samples = sum(recv for recv, _ in samples[g])
+        secs = sum(recv / fs for recv, fs in samples[g])
+        time_str = (f"{secs:.0f} s ({secs/60:.1f} min)" if secs >= 60
+                    else f"{secs:.0f} s")
+        return (f"{g}\nn={len(groups[g])}, {total_samples:,} samples\n"
+                f"≈{time_str}")
 
     for g in GROUP_ORDER:
         if len(groups[g]) < 2:
@@ -76,7 +90,8 @@ def main():
     parts["cmaxes"].set_label("Max / min")
 
     ax.set_xticks(range(1, len(GROUP_ORDER) + 1))
-    ax.set_xticklabels([f"{g}\n(n={len(groups[g])})" for g in GROUP_ORDER])
+    ax.set_xticklabels([tick_label(g) for g in GROUP_ORDER])
+    ax.tick_params(axis="x", labelsize=9)
     ax.set_ylabel("Samples lost per trial (% missing)")
     ax.set_title("Sample loss per trial by recording type")
     ax.grid(True, axis="y", alpha=0.3)
@@ -100,7 +115,11 @@ def main():
 
     for g in GROUP_ORDER:
         vals = groups[g]
-        print(f"{g}: n={len(vals)} mean={sum(vals)/len(vals):.2f}% "
+        total_samples = sum(recv for recv, _ in samples[g])
+        secs = sum(recv / fs for recv, fs in samples[g])
+        print(f"{g}: n={len(vals)} samples={total_samples:,} "
+              f"duration={secs:.0f} s ({secs/60:.1f} min) "
+              f"mean={sum(vals)/len(vals):.2f}% "
               f"min={min(vals):.2f}% max={max(vals):.2f}%")
     print(f"Saved: {png_path}")
     print(f"Saved: {pdf_path}")
