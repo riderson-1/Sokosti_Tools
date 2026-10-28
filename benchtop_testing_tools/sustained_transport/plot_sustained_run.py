@@ -10,7 +10,8 @@ Produces, by default in <script_dir>/output/:
       One figure with 5 panels in the same window: EMG sample rate, EMG per-interval
       drops, IMU sample rate, IMU per-interval drops, and per-thread CPU load
       (stacked, from cycle deltas). The IMU panels are skipped when the log has
-      no IMU/s report lines.
+      no IMU/s report lines. When the log carries drdy_isr counters, an extra
+      panel shows interrupts lost before acquisition (drdy_isr - collected).
 
   samples_overview_<logstem>.pdf
       The same figure in vector (PDF) form.
@@ -74,7 +75,8 @@ TS_RE = re.compile(_TS)
 LOGLINE_RE = re.compile(r"\[\d+:\d{2}:\d{2}\.\d{3},\d{3}\] <\w+> [^\r\n]*\r?\n")
 THREAD_RE = re.compile(r"^\s*(.+?)\s*: STACK: .*?CPU:\s*(\d+)\s*%", re.M)
 CYCLES_RE = re.compile(r"Total CPU cycles used:\s*(\d+)")
-EMG_RE = re.compile(_TS + r".*EMG/s: collected=(\d+) live_q_drop=(\d+) sd_q_drop=(\d+)")
+EMG_RE = re.compile(_TS + r".*EMG/s: collected=(\d+) live_q_drop=(\d+) sd_q_drop=(\d+)"
+                    r"(?: \| drdy_isr=(\d+) drdy_backlog=(\d+))?")
 IMU_RE = re.compile(_TS + r".*IMU/s: collected=(\d+) live_q_drop=(\d+) sd_q_drop=(\d+)")
 
 
@@ -84,15 +86,17 @@ def ts_to_s(m):
 
 
 def parse_log(path):
-    """Return (emg, imu, cpu_blocks).
+    """Return (emg, imu, cpu_blocks, isr).
 
     emg/imu: list of (t_s, collected, live_q_drop, sd_q_drop)
     cpu_blocks: list of (t_s, {thread_name: cumulative_cycles})
+    isr: list of (t_s, drdy_isr) parallel to emg; drdy_isr is None when the
+    log line does not carry the counter (older firmware).
     """
     with open(path, errors="replace") as f:
         lines = f.read().splitlines(keepends=True)
 
-    emg, imu = [], []
+    emg, imu, isr = [], [], []
     blocks = []
     last_t = 0.0
     cur = None
@@ -107,6 +111,8 @@ def parse_log(path):
         m = EMG_RE.search(line)
         if m:
             emg.append((ts_to_s(m), *map(int, m.groups()[5:8])))
+            isr.append((ts_to_s(m),
+                        int(m.group(9)) if m.group(9) is not None else None))
         m = IMU_RE.search(line)
         if m:
             imu.append((ts_to_s(m), *map(int, m.groups()[5:8])))
@@ -128,7 +134,7 @@ def parse_log(path):
                 cycles[name] = int(m.group(1))
                 name = None
         cpu.append((t, cycles))
-    return emg, imu, cpu
+    return emg, imu, cpu, isr
 
 
 def print_gap_statistics(csv_path, fs):
@@ -321,7 +327,7 @@ def print_loss_attribution(emg_stats, imu_stats, live_csv, sd_csv, fs, fs_imu):
     print("stationary sensor, hence the ~ on the IMU after-queue and total columns.")
 
 
-def plot_overview(emg, imu, cpu, png_path, fs, fs_imu):
+def plot_overview(emg, imu, cpu, png_path, fs, fs_imu, isr=None):
     emg = np.array(emg)
     imu = np.array(imu)
     if len(emg) < 2:
@@ -336,8 +342,11 @@ def plot_overview(emg, imu, cpu, png_path, fs, fs_imu):
     print("EMG intervals with a missing report line:", int(gap_e.sum()))
 
     has_imu = ti is not None
-    fig, ax = plt.subplots(5 if has_imu else 3, 1,
-                           figsize=(11, 13 if has_imu else 9), sharex=True)
+    has_isr = isr is not None and any(v is not None for _, v in isr)
+    n_panels = (5 if has_imu else 3) + (1 if has_isr else 0)
+    fig, ax = plt.subplots(n_panels, 1,
+                           figsize=(11, (13 if has_imu else 9)
+                                    + (2.5 if has_isr else 0)), sharex=True)
     ax[0].plot(te, re_, lw=.8, label="EMG")
     ax[0].axhline(nom, ls="--", c="gray", lw=.8, label=f"median {nom:.0f} Hz")
     ax[0].set_title("EMG sampling rate")
@@ -366,6 +375,26 @@ def plot_overview(emg, imu, cpu, png_path, fs, fs_imu):
         print("IMU intervals with a missing report line:", int((dti > 1.6).sum()))
     else:
         print("No IMU/s report lines found - IMU panels skipped.")
+
+    # ISR integrity panel: drdy_isr counts interrupts served, collected counts
+    # frames read; every read needs one interrupt, so a positive difference is
+    # an interrupt whose sample never entered acquisition (lost before the
+    # queues). Both counters come from the same report line, so the per-
+    # interval difference is exact.
+    if has_isr:
+        isr_v = np.array([v if v is not None else np.nan for _, v in isr], float)
+        miss = isr_v[1:] - emg[1:, 1]
+        miss[dte > 1.6] = np.nan
+        i_isr = 4 if has_imu else 2
+        ax[i_isr].bar(te, np.nan_to_num(miss), width=1, color="tab:purple",
+                      label="drdy_isr - collected")
+        ax[i_isr].set_title("EMG interrupts lost before acquisition")
+        ax[i_isr].set_ylabel("drdy_isr - collected\nper interval")
+        ax[i_isr].legend()
+        n_miss = int(np.nansum(np.clip(miss, 0, None)))
+        print("EMG interrupts lost before acquisition (drdy_isr - collected):",
+              n_miss, "total, max", int(np.nanmax(miss)) if not np.isnan(miss).all() else 0,
+              "per interval")
 
     # CPU load per thread, stacked to 100 %. The analyzer's own "CPU: x %" is a
     # running average since boot, so use deltas of the cumulative cycle counters.
@@ -480,8 +509,8 @@ def main():
         print_gap_statistics(args.csv_sd, args.fs)
         print()
         print("## Sample loss and CPU load")
-        emg, imu, cpu = parse_log(args.log)
-        plot_overview(emg, imu, cpu, png_path, args.fs, args.fs_imu)
+        emg, imu, cpu, isr = parse_log(args.log)
+        plot_overview(emg, imu, cpu, png_path, args.fs, args.fs_imu, isr)
         emg_stats = print_loss_statistics(np.array(emg), args.fs, "EMG")
         imu_stats = None
         if imu is not None and len(imu) >= 2:
