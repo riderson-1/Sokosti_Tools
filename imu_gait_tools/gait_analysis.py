@@ -21,10 +21,9 @@ Pipeline
 --------
 1. Load (sample, roll, pitch, yaw, accel_x/y/z) from the capture CSV.
 2. Resample the 50 Hz zero-order-held IMU streams onto a uniform grid.
-3. Filter:
-   - 4th-order zero-phase Butterworth low-pass (default 10 Hz) on angles.
-   - Gravity removal: 4th-order zero-phase Butterworth high-pass
-     (default 0.2 Hz) on each accel axis -> dynamic acceleration.
+3. No IMU filters: the angles are used raw (unwrapped only), and gravity
+   is removed from the accelerometer by subtracting the mean gravity
+   vector (DC removal) -> dynamic acceleration.
 4. PCA:
    - Angular-rate PCA on [d(roll)/dt, d(pitch)/dt, d(yaw)/dt]: PC1 is the
      dominant rotation axis. For sagittal-dominant walking PC1 should align
@@ -44,8 +43,8 @@ Pipeline
    pitch-up = positive; dynamic-accel PC1: largest axis component
    positive), optionally plot and export the processed signals.
 7. Second figure: EMG linear envelope (ch1 by default, --channel) computed
-   with the SAME filter chain as emg_isometric.py (bandpass 20-400 Hz +
-   notch 48-52 Hz, rectify, low-pass, all zero-phase, gap-aware per
+   with the SAME filter chain as plot_isometric_raw_modes.py (bandpass
+   20-450 Hz, NO notch, rectify, low-pass, all zero-phase, gap-aware per
    contiguous valid segment) above the dynamic-accel PC1 and the
    angular-rate PC1 on one shared time axis, so muscle activity and
    sagittal-plane motion can be compared on the same timeline.
@@ -80,7 +79,6 @@ import sys
 import numpy as np
 import pandas as pd
 from scipy import signal
-from scipy.signal import butter, filtfilt
 
 try:
     import matplotlib.pyplot as plt
@@ -138,18 +136,6 @@ def fix_sign_acc(acc_axis, acc_pc1):
 # ---------------------------------------------------------------------------
 # Filtering
 # ---------------------------------------------------------------------------
-def butter_filter(x, fs, fc, order, btype):
-    """Zero-phase Butterworth filter (filtfilt). x: 1-D array."""
-    nyq = fs / 2.0
-    if not 0.0 < fc < nyq:
-        raise SystemExit(f"Filter cutoff {fc} Hz must be between 0 and Nyquist {nyq} Hz")
-    b, a = butter(order, fc / nyq, btype=btype)
-    padlen = min(3 * max(len(a), len(b)), x.size - 1)
-    if padlen < 1:
-        raise SystemExit("Signal too short to filter")
-    return filtfilt(b, a, x, padtype="odd", padlen=padlen)
-
-
 def unwrap_deg(x_deg):
     """Unwrap an angle series given in degrees (handles +/-180 deg wraps)."""
     return np.rad2deg(np.unwrap(np.deg2rad(x_deg)))
@@ -222,19 +208,19 @@ def resample_uniform(sample, imu, emg_fs, imu_fs):
 
 
 # ---------------------------------------------------------------------------
-# EMG envelope (same filter chain as emg_isometric.py)
+# EMG envelope (same filter chain as plot_isometric_raw_modes.py)
 # ---------------------------------------------------------------------------
 ADS1299_VREF = 4.5
 
 
 def compute_emg_envelope(path, channel, emg_fs, env_cutoff, gain):
-    """Linear EMG envelope with the emg_isometric.py filter chain:
-    4th-order zero-phase bandpass 20-400 Hz, 2nd-order zero-phase notch
-    48-52 Hz, rectify, 4th-order zero-phase low-pass at ``env_cutoff`` Hz.
+    """Linear EMG envelope with the plot_isometric_raw_modes.py filter
+    chain: 4th-order zero-phase bandpass 20-450 Hz (NO notch), rectify,
+    4th-order zero-phase low-pass at ``env_cutoff`` Hz.
 
     Gaps in the sample-counter column are re-inserted as NaN and filtering
     runs per contiguous valid segment (>= 64 samples), exactly like
-    emg_isometric.py. The envelope is converted to microvolts with
+    plot_isometric_raw_modes.py. The envelope is converted to microvolts with
     Vref = 4.5 V and the given PGA gain.
 
     Returns (t_s, envelope_uv) over the FULL reconstructed timeline, with
@@ -302,15 +288,18 @@ def compute_emg_envelope(path, channel, emg_fs, env_cutoff, gain):
             start_idx = int(idx[g])
             print(f"| {start_idx} | {length} | {length / emg_fs * 1000:.0f} |")
 
-    b_bp, a_bp = signal.butter(4, [20.0 / nyq, 400.0 / nyq], btype="bandpass")
-    b_no, a_no = signal.butter(2, [48.0 / nyq, 52.0 / nyq], btype="bandstop")
+    # plot_isometric_raw_modes.py chain: 20-450 Hz bandpass, no notch.
+    # (SENIAM says 20-500 Hz, but fs = 980 Hz gives Nyquist 490 Hz and a
+    # Butterworth edge that close to Nyquist is numerically unstable;
+    # 450 Hz keeps the design stable and covers the full EMG bandwidth.)
+    b_bp, a_bp = signal.butter(4, [20.0 / nyq, 450.0 / nyq], btype="bandpass")
     b_env, a_env = signal.butter(4, env_cutoff / nyq, btype="lowpass")
     uv_per_code = ADS1299_VREF / gain / (2 ** 23) * 1e6
     print("\n## EMG envelope filters\n")
     print("| Metric | Value |")
     print("|--------|-------|")
-    print("| Bandpass | 20-400 Hz, 4th order, zero-phase |")
-    print("| Notch | 48-52 Hz, 2nd order, zero-phase |")
+    print("| Bandpass | 20-450 Hz, 4th order, zero-phase |")
+    print("| Notch | none (mains stays in the signal) |")
     print(f"| Envelope low-pass | {env_cutoff:g} Hz, 4th order, zero-phase |")
     print(f"| PGA gain | {gain:g} |")
     print(f"| Scale | {uv_per_code:.4f} µV/code |")
@@ -328,7 +317,6 @@ def compute_emg_envelope(path, channel, emg_fs, env_cutoff, gain):
     envelope = np.full(n_full, np.nan)
     for (s, e) in valid_segments(received, min_len=64):
         seg = signal.filtfilt(b_bp, a_bp, recon[s:e])
-        seg = signal.filtfilt(b_no, a_no, seg)
         envelope[s:e] = signal.filtfilt(b_env, a_env, np.abs(seg))
 
     t = np.arange(full_start, full_end + 1) / emg_fs
@@ -343,11 +331,12 @@ def analyze(t, imu, args):
     fs = args.imu_fs
     dt = 1.0 / fs
 
-    roll_f = butter_filter(imu[:, 0], fs, args.lp_fc, args.order, "low")
-    pitch_f = butter_filter(imu[:, 1], fs, args.lp_fc, args.order, "low")
-    yaw_f = butter_filter(imu[:, 2], fs, args.lp_fc, args.order, "low")
+    # No IMU filters: raw (unwrapped) angles, mean-subtracted acceleration.
+    roll_f = imu[:, 0]
+    pitch_f = imu[:, 1]
+    yaw_f = imu[:, 2]
 
-    # Gravity estimate (before high-pass): should be ~1 g for a static-ish sensor.
+    # Gravity estimate (mean accel): should be ~1 g for a static-ish sensor.
     g_vec = imu[:, 3:6].mean(axis=0)
     print("\n## Gravity estimate (mean accel)\n")
     print("| Metric | Value |")
@@ -357,13 +346,11 @@ def analyze(t, imu, args):
     print(f"| accel_z | {g_vec[2]:+.3f} g |")
     print(f"| \\|g\\| | {np.linalg.norm(g_vec):.3f} g |")
 
-    # Dynamic acceleration: high-pass removes gravity + DC offset.
-    acc_dyn = np.column_stack([
-        butter_filter(imu[:, 3 + j], fs, args.hp_fc, args.order, "high")
-        for j in range(3)
-    ])
+    # Dynamic acceleration: subtracting the mean gravity vector removes
+    # gravity + DC offset (no high-pass filter).
+    acc_dyn = imu[:, 3:6] - g_vec
 
-    # Angular rates from filtered, unwrapped Euler angles (deg/s).
+    # Angular rates from unwrapped Euler angles (deg/s).
     rate = np.column_stack([
         np.gradient(unwrap_deg(a), dt) for a in (roll_f, pitch_f, yaw_f)
     ])
@@ -525,9 +512,7 @@ def write_trial_csvs(args, res, emg_t, emg_env, sample, legacy, accel_mag,
         f"# input: {args.input}",
         f"# imu_fs_hz: {args.imu_fs:g}",
         f"# emg_fs_hz: {args.emg_fs:g}",
-        f"# lp_fc_hz: {args.lp_fc:g}",
-        f"# hp_fc_hz: {args.hp_fc:g}",
-        f"# filter_order: {args.order}",
+        f"# imu_filters: none (raw angles, mean-subtracted accel)",
         f"# accel_unit: {'legacy->g (x 1/256)' if legacy else 'g'}",
         f"# median_abs_accel: {_fmt(accel_mag)}",
         f"# imu_rows: {sample.size}",
@@ -609,8 +594,8 @@ def write_trial_csvs(args, res, emg_t, emg_env, sample, legacy, accel_mag,
         f"# gain: {args.gain:g}",
         f"# uv_per_code: {uv_per_code:.6g}",
         f"# emg_fs_hz: {args.emg_fs:g}",
-        f"# bandpass: 20-400 Hz, 4th order, zero-phase",
-        f"# notch: 48-52 Hz, 2nd order, zero-phase",
+        f"# bandpass: 20-450 Hz, 4th order, zero-phase",
+        f"# notch: none",
         f"# envelope_lowpass_hz: {args.env_cutoff:g}",
     ]
     env_path = os.path.join(out_dir, base + "_emg.csv")
@@ -917,7 +902,7 @@ def main(argv=None):
 
     res = analyze(t, imu, args)
 
-    # EMG envelope over the full CSV timeline (emg_isometric.py filter chain).
+    # EMG envelope over the full CSV timeline (raw-modes filter chain).
     emg_t, emg_env = compute_emg_envelope(
         args.input, args.channel, args.emg_fs, args.env_cutoff, args.gain)
 
