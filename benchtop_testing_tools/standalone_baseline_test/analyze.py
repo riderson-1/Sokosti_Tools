@@ -28,7 +28,7 @@ warnings.filterwarnings("ignore", category=RuntimeWarning)
 DEVICE_BASELINE_PATH = "/home/karl/Documents/Master_Thesis/Testing/benchtop_testing/device_baseline"
 OUTPUT_DIR = "/home/karl/repos/Sokosti_tools/benchtop_testing_tools/standalone_baseline_test/outputs"
 
-FS = 1000            # sampling rate, Hz
+FS = 980             # effective ADS1299 sample rate (2.000 MHz clock instead of 2.048 MHz -> ~980 SPS, measured)
 GAIN = 1             # PGA gain (1G in the folder / file name)
 VREF = 4.5           # reference voltage, V
 N_CHANNELS = 16

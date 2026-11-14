@@ -275,8 +275,9 @@ def plot_amplitude_ratio(d, output_path):
 def plot_sinad(d, output_path):
     """SINAD in dB (left axis) with ENOB in bits on the right axis.
 
-    ENOB = (SINAD - 1.76) / 6.02 is a linear re-scaling of the same curve,
-    so both units share one plot.
+    ENOB = (SINAD - 1.76) / 6.02 (IEEE 1241) is a linear re-scaling of the
+    same curve, so both units share one plot. This matches the results
+    table, which uses the same plain (non-FS-normalized) ENOB.
     """
     fig, ax = plt.subplots(figsize=(6.4, 4.4))
 
@@ -350,7 +351,7 @@ def export_results_table(d, csv_path, tex_path):
 
     # CSV: all metrics, one row per (gain, amplitude)
     out = pd.concat({"amp_err_pct": err, "sinad_db": sinad,
-                     "ENOB (FS-normalized)": enob},
+                     "ENOB (bits)": enob},
                     names=["metric"]).rename_axis(
                         ["metric", "gain", "amp_mvpp"]).reset_index()
     out.to_csv(csv_path, index=False)
@@ -370,8 +371,8 @@ def export_results_table(d, csv_path, tex_path):
         f.write(to_tex(err))
         f.write("\n\n% Mean SINAD across channels, in dB (primary quality metric)\n")
         f.write(to_tex(sinad))
-        f.write("\n\n% Mean ENOB (FS-normalized) across channels, in bits "
-                "(MT-003 Eq. 2)\n")
+        f.write("\n\n% Mean ENOB across channels, in bits "
+                "(IEEE 1241: (SINAD - 1.76) / 6.02)\n")
         f.write(to_tex(enob))
         f.write("\n")
 

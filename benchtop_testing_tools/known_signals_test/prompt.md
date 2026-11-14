@@ -39,15 +39,15 @@ Write python solution (numpy, scipy, pandas, matplotlib only) that evaluates the
    - amplitude error % = (measured Vpp − nominal Vpp) / nominal Vpp * 100
    - residual = data − fit
    - SINAD (dB) = 20*log10(RMS(fit sine part) / RMS(residual)), where the sine part is the fit with the DC term removed. This equals 10*log10(P_signal / P_noise+distortion). RMS_sine is A/√2; the residual is noise + distortion + any fit mismatch. SINAD includes the signal generator's own noise and distortion.
-   - ENOB (FS-normalized) = (SINAD − 1.76 + 20*log10(FS_pp / measured_Vpp)) / 6.02, with FS_pp = 2*VREF/gain (full-scale peak-to-peak at this gain, in volts), per Analog Devices MT-003 Eq. 2. measured_Vpp and FS_pp must be in the same units (volts). Computed per channel from that channel's own SINAD and measured Vpp, then aggregated.
+   - ENOB = (SINAD − 1.76) / 6.02 (IEEE 1241). No full-scale normalization: it describes how well *this* signal is digitized, not the extrapolated full-scale performance.
 4. Aggregate across the 8 channels: mean, std, min, max of measured Vpp, amplitude error %, SINAD, and ENOB.
 
 ## Methods note
-The method follows the sine-fit approach of IEEE 1057 and the ADC characterization conventions of IEEE 1241. SINAD includes the signal generator's own noise and distortion (it characterizes generator + input chain + ADC, not the ADC alone). ENOB is normalized to full scale per MT-003 Eq. 2.
+The method follows the sine-fit approach of IEEE 1057 and the ADC characterization conventions of IEEE 1241. SINAD includes the signal generator's own noise and distortion (it characterizes generator + input chain + ADC, not the ADC alone). ENOB = (SINAD − 1.76) / 6.02 with no full-scale normalization.
 
 ## Outputs (save to <OUTPUT_PATH>)
-1. results.csv: one row per condition with gain, nominal Vpp, freq, measured Vpp (mean, std), amplitude error % (mean, min, max), SINAD (mean, min, max), ENOB FS-normalized (mean, min, max).
-2. results_table: a compact matrix, grouped by gain then nominal Vpp, with frequency across the columns, showing mean amplitude error %, mean SINAD (dB) as the main quality column, and ENOB (FS-normalized) as the secondary column. Also export it as LaTeX (booktabs).
+1. results.csv: one row per condition with gain, nominal Vpp, freq, measured Vpp (mean, std), amplitude error % (mean, min, max), SINAD (mean, min, max), ENOB (mean, min, max).
+2. results_table: a compact matrix, grouped by gain then nominal Vpp, with frequency across the columns, showing mean amplitude error %, mean SINAD (dB) as the main quality column, and ENOB (bits) as the secondary column. Also export it as LaTeX (booktabs).
 3. Figure 1, data vs. fitted ideal sine: 3 representative conditions (8G/10mVpp/10Hz, 1G/2mVpp/100Hz, 1G/0.1mVpp/250Hz). For each, plot channel <CH> over ~3–5 periods with the fitted sine overlaid, and the residual in a thin subplot below. Shared style, readable axes in µV or mV as appropriate.
 4. Figure 2, amplitude ratio (measured/nominal) vs. frequency (log x-axis): one line per (gain, amplitude) combination, markers at the tested frequencies, a horizontal reference line at 1.0, and error bars showing the spread across channels.
 Save figures as PNG (300 dpi) and PDF.

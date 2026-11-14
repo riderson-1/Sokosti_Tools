@@ -6,8 +6,7 @@ A function generator fed the same sine wave to all channels simultaneously.
 For every condition folder (ALL_<gain>G_Sine_<amp>mVpp_<freq>Hz) this script
 loads the PC.csv recording, converts ADC counts to volts, fits an ideal sine
 at the KNOWN nominal frequency (3-parameter linear least squares, IEEE 1057),
-computes amplitude error, SINAD and ENOB (full-scale-normalized,
-MT-003 Eq. 2) per channel, aggregates over the
+computes amplitude error, SINAD and ENOB per channel, aggregates over the
 channels, and saves tables plus interim data for plot.py.
 
 Sample rate: the ADS1299 is clocked with 2.000 MHz instead of the nominal
@@ -41,8 +40,8 @@ Usage:
 # grid + golden-section search over frequency. SINAD / ENOB follow the IEEE
 # 1241 conventions. SINAD therefore includes the signal generator's own noise
 # and distortion, i.e. it characterizes the whole generator + input chain +
-# ADC chain, not the ADC alone. ENOB is normalized to full scale per Analog
-# Devices MT-003 Eq. 2.
+# ADC chain, not the ADC alone. ENOB = (SINAD - 1.76) / 6.02 describes how
+# well this specific signal is digitized; no full-scale normalization.
 # ============================================================================
 
 import argparse
@@ -267,7 +266,7 @@ def fit_sine_4p(y, f_nom, fs):
     return a, b, dc, f_fit, M @ coef
 
 
-def sine_metrics(y, a, b, dc, fit, nominal_vpp, gain):
+def sine_metrics(y, a, b, dc, fit, nominal_vpp):
     """Amplitude, amplitude error, SINAD and ENOB for one fit."""
     vpp = 2.0 * float(np.hypot(a, b))
     amp_err_pct = (vpp - nominal_vpp) / nominal_vpp * 100.0
@@ -281,10 +280,9 @@ def sine_metrics(y, a, b, dc, fit, nominal_vpp, gain):
     # (noise + distortion + any fit mismatch).
     if rms_sine > 0 and rms_resid > 0:
         sinad_db = 20.0 * np.log10(rms_sine / rms_resid)
-
-        FS_pp = 2.0 * VREF / gain   # full-scale peak-to-peak at this gain, in volts
-        # Normalized to full scale per Analog Devices MT-003 Eq. 2, so ENOB is comparable across input amplitudes.
-        enob = (sinad_db - 1.76 + 20.0 * np.log10(FS_pp / vpp)) / 6.02
+        # ENOB for this signal as measured (IEEE 1241): no full-scale
+        # normalization, so it answers "how well is *this* signal digitized".
+        enob = (sinad_db - 1.76) / 6.02
     else:
         sinad_db, enob = np.nan, np.nan
 
@@ -407,7 +405,7 @@ def main():
 
                 a, b, dc, f_fit, fit = fit_sine_4p(y, freq, fs_eff)
                 vpp, err, sinad, enob = sine_metrics(y, a, b, dc, fit,
-                                                     amp * 1e-3, gain)
+                                                     amp * 1e-3)
 
                 vpp_ch[ch - 1] = vpp
                 err_ch[ch - 1] = err
